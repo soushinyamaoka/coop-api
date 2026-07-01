@@ -1,0 +1,15 @@
+[Unit]
+Description=COOP連携API Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/coop_api
+ExecStart=/home/ubuntu/coop_api/venv/bin/python coop_api_server.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/ubuntu/coop_api/.env
+
+[Install]
+WantedBy=multi-user.target

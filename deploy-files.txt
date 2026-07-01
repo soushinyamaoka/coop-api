@@ -1,0 +1,18 @@
+# ===========================================
+# COOP連携API デプロイ対象ファイル
+# アップロードしたいファイルを1行ずつ記載
+# # で始まる行と空行は無視されます
+# ===========================================
+
+coop_parser.py
+fetch_coop_mail.py
+coop_api_server.py
+requirements.txt
+.env
+
+# 注意: 以下はアップロード対象外
+# .env.example   ... 初回デプロイ時のみ必要
+# coop-api.service ... systemdに登録済み
+# venv/          ... VPS上で作成済み
+# data/          ... VPS上のデータ
+# __pycache__/   ... 不要
