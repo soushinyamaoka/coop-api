@@ -1,6 +1,15 @@
 # COOP連携API デプロイ作業手順書
 # （WinSCP + TeraTerm 操作用）
 
+> ## ⚠ この手順書は VPS安全化前の旧手順です（利用前に現行構成を確認）
+>
+> 本書は `/home/ubuntu` 配下・`ubuntu`ユーザー・ユーザーcrontab 前提の旧マニュアルです。VPS安全化後の現行 production contract は以下で、本書の一部と異なります。
+> - **bind**: `127.0.0.1:8003`（`0.0.0.0`で公開しない）。外部公開ポートは **22/80/443 のみ**。外部からは `https://coop.homehub-tools.dedyn.io` 経由（`:8003` は直接到達不可）。
+> - **runtime user/group**: `coop-api`（systemd を deploy ユーザーへ戻さない）。
+> - **`.env`**: `root:coop-api 0640`。deploy artifact に含めない・転送/上書きしない。
+> - **scheduled worker**: `/etc/cron.d/coop-api`（`coop-api`ユーザー・07:00/20:00 JST）。
+> - **`/opt/apps/deploy.sh`** は legacy route。配置先パス・デプロイ手順は現行構成で要確認。
+
 ---
 
 ## 環境情報
@@ -191,7 +200,7 @@ cat data/coop_latest.json | python -m json.tool | head -30
 python coop_api_server.py
 ```
 
-`Uvicorn running on http://0.0.0.0:8003` と表示されたら起動成功。
+`Uvicorn running on http://127.0.0.1:8003` と表示されたら起動成功（現行は `127.0.0.1` bind。外部公開は HTTPS入口経由）。
 
 **TeraTermをもう1つ開いて** `<VPS_IP>` に接続し、以下で確認:
 

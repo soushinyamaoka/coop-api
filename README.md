@@ -52,6 +52,9 @@ COOPデリの注文確認メールをGmail（IMAP）経由で自動取得し、
 3. 表示された16文字のパスワードをメモ
 
 ### 2. VPSにデプロイ
+
+> ⚠ 以下は VPS安全化前の旧手順（`ubuntu`ユーザー・`/home/ubuntu`・`0.0.0.0`前提）。現行は runtime user `coop-api` / bind `127.0.0.1:8003` / 外部公開は `https://coop.homehub-tools.dedyn.io` 経由 / `.env` は `root:coop-api 0640`（deploy artifactに含めない）。配置先パス・デプロイ手順は現行構成を確認すること。
+
 ```bash
 # ファイルをVPSに転送（WinSCPまたはscp）
 scp -r coop_api/ ubuntu@<VPS_IP>:/home/ubuntu/coop_api/

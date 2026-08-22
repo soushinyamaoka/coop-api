@@ -61,10 +61,20 @@ coop-api/
 
 ## サーバー構成・ポート番号
 
+> ## ⚠ VPS安全化後の現行仕様（この文書には旧構成の記述が残っています）
+>
+> 現行 production contract は以下。以下と異なる旧記述（`0.0.0.0` bind / `ubuntu`ユーザー / `/home/ubuntu` パス / 外部ポート直叩き / `/opt/apps/deploy.sh`）は**VPS安全化前**のもので、現行と異なる場合があります。**利用前に現行構成を確認してください。**
+> - **bind**: `127.0.0.1:8003`（`0.0.0.0`で公開しない）。外部公開ポートは **22/80/443 のみ**。外部からは HTTPS入口 `https://coop.homehub-tools.dedyn.io` 経由でアクセスし、`:8003` へは直接到達不可。
+> - **runtime user/group**: `coop-api`（systemd runtime を deploy ユーザーへ戻さない）
+> - **`.env`**: `root:coop-api 0640`。**deploy artifact に含めない・転送/上書きしない**。runtime は read-only で参照。
+> - **scheduled worker**: `/etc/cron.d/coop-api`（`coop-api`ユーザー・07:00/20:00 JST）。旧 deploy crontab へ戻さない。
+> - **`/opt/apps/deploy.sh`** は legacy route（新 canonical framework ではない）。
+> - 配置先パス・デプロイ手順は VPS安全化で変わり得るため、旧 `/home/ubuntu/...` 記述は現行構成で要確認。
+
 ### VPS環境
 - さくらVPS（大阪）: `<VPS_IP>`（実IPは.envまたはデプロイスクリプトを参照）
 - OS: Ubuntu 22.04 LTS
-- ユーザー: `ubuntu`（SSH鍵認証）
+- runtime user/group: `coop-api`（サービスはこのユーザーで稼働。SSH/deployユーザーとは別）
 
 ### ポート構成
 
@@ -159,7 +169,7 @@ setup.sh が以下を自動実行:
 GMAIL_ADDRESS=<Gmailアドレス>
 GMAIL_APP_PASSWORD=<Googleアプリパスワード（16文字）>
 COOP_SENDER=coopdeli
-API_HOST=0.0.0.0
+API_HOST=127.0.0.1
 API_PORT=8003
 API_TOKEN=<任意のトークン>
 ```
@@ -217,6 +227,9 @@ cat /etc/cron.d/coop-api
 ```
 
 ### API動作確認
+
+> ※ VPS安全化後、`:8003` は外部非公開（`127.0.0.1` bind）。外部からの確認は HTTPS入口 `https://coop.homehub-tools.dedyn.io` を使う。以下の `http://$VPS_IP:8003` 例は **VPS内 localhost** での確認に読み替えること。
+
 ```bash
 # .envからトークンを読み込む（bash用）
 export $(grep API_TOKEN .env | xargs)
