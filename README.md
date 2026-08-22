@@ -10,7 +10,7 @@ COOPデリの注文確認メールをGmail（IMAP）経由で自動取得し、
   │                               │                              │
   │  IMAP(993)                    │  ポート8003                   │
   │◄──────────────────── fetch_coop_mail.py                      │
-  │                          (cron: 7時/20時)                    │
+  │           (/etc/cron.d/coop-api・coop-apiユーザー 07:00/20:00 JST)
   │                               │                              │
   │                               ▼                              │
   │                        data/coop_latest.json                 │

@@ -248,37 +248,26 @@ http://<VPS_IP>:8003/
 
 ---
 
-## 手順5: cron登録（TeraTerm）
+## 手順5: scheduled worker（メール自動取得）
 
-毎日7時と20時に自動でメール取得するよう設定します。
+メール取得ワーカー `fetch_coop_mail.py` を毎日 07:00 / 20:00 JST に自動実行する。
 
-### 5-1. crontab編集
+> **VPS安全化後の現行構成（重要）**
+> - 実行定義: **`/etc/cron.d/coop-api`**（ユーザーcrontab `crontab -e` ではない）
+> - 実行ユーザー: **`coop-api`**
+> - スケジュール: 毎日 **07:00 / 20:00 JST**・対象は `fetch_coop_mail.py`
+> - 旧 `ubuntu` / deployユーザーの crontab entry は削除済み。**deployユーザーの crontab へ旧 entry を復活させないこと。**
+> - `.env`（`root:coop-api 0640`）は worker が read-only で参照する。
 
-```bash
-crontab -e
-```
-
-エディタが開くので、**一番下に** 以下の1行を追加:
-
-```
-0 7,20 * * * /home/ubuntu/coop_api/venv/bin/python /home/ubuntu/coop_api/fetch_coop_mail.py >> /home/ubuntu/coop_api/logs/cron.log 2>&1
-```
-
-保存して終了（nanoの場合: `Ctrl + O` → Enter → `Ctrl + X`）
-
-### 5-2. 登録確認
+### 5-1. 登録確認
 
 ```bash
-crontab -l
+cat /etc/cron.d/coop-api
 ```
 
-追加した行が表示されればOK。
+`coop-api` ユーザーで `fetch_coop_mail.py` が 07:00 / 20:00 に登録されていることを確認する。実際のコマンド・パス・ログ出力先は同ファイルの定義に従う。
 
-### 5-3. ログ用ディレクトリ確認
-
-```bash
-mkdir -p /home/ubuntu/coop_api/logs
-```
+> ※ 07:00 / 20:00 の自然実行（時刻到来での自動実行）の最終確認は現時点では未完了。
 
 ---
 
@@ -289,8 +278,8 @@ PCのブラウザまたはTeraTermのcurlで以下を確認:
 - [ ] `http://<VPS_IP>:8003/` → サービス情報が返る
 - [ ] `curl -H "Authorization: Bearer $API_TOKEN" http://<VPS_IP>:8003/api/coop/ingredients` → 食材リストが返る
 - [ ] `sudo systemctl status coop-api` → active (running)
-- [ ] `crontab -l` → cronジョブが登録されている
-- [ ] `ls /home/ubuntu/coop_api/data/` → JSONファイルが存在する
+- [ ] `cat /etc/cron.d/coop-api` → `coop-api` ユーザーで 07:00 / 20:00 の cronジョブが登録されている
+- [ ] data ディレクトリに JSONファイルが存在する（配置先はサーバー構成に従う）
 
 ---
 
@@ -360,12 +349,15 @@ sudo lsof -i :8003
 
 ### メール取得がcronで動かない
 ```bash
-# cronのログを確認
-cat /home/ubuntu/coop_api/logs/cron.log
+# cron定義を確認（実行ユーザー coop-api / 07:00・20:00）
+cat /etc/cron.d/coop-api
 
-# 手動で同じコマンドを実行してエラーを確認
-/home/ubuntu/coop_api/venv/bin/python /home/ubuntu/coop_api/fetch_coop_mail.py
+# cron実行ログを確認（出力先は /etc/cron.d/coop-api の定義に従う）
+sudo journalctl -u cron --since today | grep coop-api
 ```
+
+> 手動でワーカーを動かす場合は `coop-api` ユーザーで実行する（`.env` は `root:coop-api 0640` のため他ユーザーからは読めない）。
+> なお、deploy作業の確認目的でワーカーを勝手に手動実行しないこと。
 
 ### Gmailに接続できない
 ```bash

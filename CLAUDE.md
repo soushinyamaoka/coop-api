@@ -147,7 +147,9 @@ setup.sh が以下を自動実行:
 - ディレクトリ作成（data/, logs/）
 - Python仮想環境セットアップ
 - systemdサービス登録・起動
-- cron設定（毎日7時・20時にメール取得）
+
+> **scheduled worker（メール自動取得）について**
+> VPS安全化後は、メール取得ワーカー `fetch_coop_mail.py` を **`/etc/cron.d/coop-api`**（実行ユーザー **`coop-api`**）で毎日 **07:00 / 20:00 JST** に実行する。旧 `ubuntu` / deployユーザーの crontab entry からは移行済みで、deployユーザーの crontab へ旧 entry を復活させないこと。`.env`（`root:coop-api 0640`）は worker が read-only で参照する。（※ 07:00 / 20:00 の自然実行の最終確認は現時点では未完了）
 
 ## 開発時の注意事項
 
@@ -210,8 +212,8 @@ sudo systemctl restart coop-api
 sudo journalctl -u coop-api -f
 cat /var/log/apps/coop-api.log
 
-# cron設定確認
-crontab -l
+# cron設定確認（実行ユーザー coop-api / 07:00・20:00 JST）
+cat /etc/cron.d/coop-api
 ```
 
 ### API動作確認
