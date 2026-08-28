@@ -271,4 +271,5 @@ curl -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application
   - 新機能: `feat: 内容`
   - リファクタリング: `refactor: 内容`
   - その他: `chore: 内容`
-- コミット後は自動でpushまで行う
+- **push は明示指示があるときだけ行う。** 「pushして」と明示されていない場合は commit までで止め、push していないことを報告する。
+- force push、履歴改変、既存変更の revert は行わない。

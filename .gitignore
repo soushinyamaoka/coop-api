@@ -22,3 +22,6 @@ logs/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# ChatGPT Work / AIファイル受け渡し
+/work/ai_handoff/
