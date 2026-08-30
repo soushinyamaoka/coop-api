@@ -17,6 +17,7 @@ import os
 import re
 import json
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 
@@ -27,7 +28,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from coop_parser import parse_coop_email, classify_item
-from fetch_coop_mail import fetch_coop_emails, save_results
+from fetch_coop_mail import configure_logging, log_event, run_coop_mail_import
 
 # ============================================================
 # 設定
@@ -52,17 +53,28 @@ CATEGORY_OVERRIDES_FILE = DATA_DIR / "category_overrides.json"
 # ユーザー登録メニュー保存先
 CUSTOM_MEALS_FILE = DATA_DIR / "custom_meals.json"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # ============================================================
 # FastAPI アプリ
 # ============================================================
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """起動方法に依存せずstartup/shutdownイベントを記録する。"""
+    log_event(logger, logging.INFO, "startup")
+    try:
+        yield
+    finally:
+        log_event(logger, logging.INFO, "shutdown")
+
+
 app = FastAPI(
     title="COOP連携API",
     description="COOPデリの注文情報からレシピを提案するAPI",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -303,11 +315,9 @@ def fetch_emails(
     """
     verify_token(authorization)
 
-    logger.info(f"メール手動取得: 過去{days_back}日分")
-    results = fetch_coop_emails(days_back=days_back)
+    results = run_coop_mail_import(days_back=days_back, save=True)
 
     if results:
-        save_results(results)
         return {
             "status": "success",
             "message": f"{len(results)}件の注文を取得しました",
@@ -369,10 +379,32 @@ async def suggest_recipes(
                     for r in recipes:
                         r["source"] = "ai_generate"
                     results["recipes"].extend(recipes)
-                    logger.info(f"AI生成: {len(recipes)}件のレシピ取得")
-            except Exception as e:
-                logger.warning(f"AI生成APIエラー: {e}")
-                results["generate_error"] = str(e)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "dependency_call_succeeded",
+                        target="recipe-generator",
+                        result_count=len(recipes),
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "dependency_failed",
+                        target="recipe-generator",
+                        error_kind="external_api",
+                        status_code=resp.status_code,
+                    )
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "dependency_failed",
+                    target="recipe-generator",
+                    error_kind="timeout" if isinstance(exc, httpx.TimeoutException) else "external_api",
+                    error_class=type(exc).__name__,
+                )
+                results["generate_error"] = str(exc)
 
         # Web検索レシピ（8002）
         if request.mode in ("search", "both"):
@@ -389,10 +421,32 @@ async def suggest_recipes(
                     for r in recipes:
                         r["source"] = "web_search"
                     results["recipes"].extend(recipes)
-                    logger.info(f"Web検索: {len(recipes)}件のレシピ取得")
-            except Exception as e:
-                logger.warning(f"Web検索APIエラー: {e}")
-                results["search_error"] = str(e)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "dependency_call_succeeded",
+                        target="recipe-search",
+                        result_count=len(recipes),
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "dependency_failed",
+                        target="recipe-search",
+                        error_kind="external_api",
+                        status_code=resp.status_code,
+                    )
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "dependency_failed",
+                    target="recipe-search",
+                    error_kind="timeout" if isinstance(exc, httpx.TimeoutException) else "external_api",
+                    error_class=type(exc).__name__,
+                )
+                results["search_error"] = str(exc)
 
     results["total_recipes"] = len(results["recipes"])
     return results
@@ -636,8 +690,24 @@ async def _fetch_day_recipes(
                     ai_result = normalize_ai_recipe(recipes[0])
             elif recipes:
                 ai_result = normalize_ai_recipe(recipes[0])
-    except Exception as e:
-        logger.warning(f"AI生成APIエラー（献立）: {e}")
+        else:
+            log_event(
+                logger,
+                logging.ERROR,
+                "dependency_failed",
+                target="recipe-generator",
+                error_kind="external_api",
+                status_code=resp.status_code,
+            )
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "dependency_failed",
+            target="recipe-generator",
+            error_kind="timeout" if isinstance(exc, httpx.TimeoutException) else "external_api",
+            error_class=type(exc).__name__,
+        )
 
     # --- Phase 2: Web検索（複数クエリで重複回避） ---
     web_result = None
@@ -653,7 +723,8 @@ async def _fetch_day_recipes(
     for ing in day_ingredients:
         search_queries.append(ing + " レシピ 簡単" if simple_mode else ing + " レシピ")
 
-    for query in search_queries:
+    search_failure_count = 0
+    for attempt, query in enumerate(search_queries, start=1):
         if web_result is not None:
             break
         try:
@@ -671,8 +742,39 @@ async def _fetch_day_recipes(
                     if not used_recipe_names or name not in used_recipe_names:
                         web_result = normalize_web_recipe(r)
                         break
-        except Exception as e:
-            logger.warning(f"Web検索APIエラー（献立）: {e}")
+            else:
+                search_failure_count += 1
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dependency_failed",
+                    target="recipe-search",
+                    error_kind="external_api",
+                    status_code=resp.status_code,
+                    attempt=attempt,
+                )
+        except Exception as exc:
+            search_failure_count += 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "dependency_failed",
+                target="recipe-search",
+                error_kind="timeout" if isinstance(exc, httpx.TimeoutException) else "external_api",
+                error_class=type(exc).__name__,
+                attempt=attempt,
+            )
+
+    if web_result is None and search_failure_count:
+        log_event(
+            logger,
+            logging.ERROR,
+            "dependency_failed",
+            target="recipe-search",
+            error_kind="external_api",
+            attempts=search_failure_count,
+            final=True,
+        )
 
     return {"recipe": ai_result, "web_recipe": web_result}
 
@@ -817,7 +919,15 @@ async def create_meal_plan(
                     )
 
                 if isinstance(result, Exception):
-                    logger.error(f"Day {day_num} レシピ取得エラー: {result}")
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "dependency_failed",
+                        target="recipe-services",
+                        error_kind="internal",
+                        error_class=type(result).__name__,
+                        day_number=day_num,
+                    )
                     result = {"recipe": None, "web_recipe": None}
 
                 # レシピ名を記録（重複回避用）
@@ -1004,5 +1114,10 @@ def update_classification(
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info(f"COOP連携APIサーバー起動: {API_HOST}:{API_PORT}")
-    uvicorn.run(app, host=API_HOST, port=API_PORT)
+    uvicorn.run(
+        app,
+        host=API_HOST,
+        port=API_PORT,
+        log_config=None,
+        access_log=False,
+    )

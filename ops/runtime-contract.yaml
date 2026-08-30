@@ -1,0 +1,11 @@
+schema_version: 1
+app: coop-api
+
+logging:
+  destinations: [stderr]
+  format: structured
+  schema_version: 1
+  contains_pii: false
+  rotation: null
+
+# その他のruntime contractセクションは未整備（本タスクの範囲外）。
