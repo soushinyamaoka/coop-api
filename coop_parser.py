@@ -102,7 +102,7 @@ def _is_ingredient_set(name: str) -> bool:
 def classify_item(name: str) -> str:
     """
     商品名からカテゴリを推定する
-    Returns: "食材" | "調理キット" | "そのまま" | "離乳食" | "調味料" | "日用品"
+    Returns: "食材" | "調理キット" | "そのまま" | "離乳食" | "調味料・日用品"
     """
     # 離乳食（最優先で判定）
     for kw in BABY_FOOD_KEYWORDS:
