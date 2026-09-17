@@ -37,7 +37,7 @@ def test_is_ingredient_set(name: str, expected: bool) -> None:
         ("ベビーダノン ヨーグルト", "離乳食"),
         ("野菜セット", "食材"),
         ("おかずセット", "調理キット"),
-        ("カレーパン", "調理キット"),
+        ("カレーパン", "そのまま"),
         ("鶏もも肉", "食材"),
         ("台所用洗剤", "調味料・日用品"),
     ],
@@ -46,17 +46,16 @@ def test_classify_item_priority_and_fallback(name: str, expected: str) -> None:
     assert classify_item(name) == expected
 
 
-# These cases lock in current substring-based behavior; they are not necessarily
-# the intended product classification and should only be changed after impact review.
+# These cases verify the intended classifications after resolving substring conflicts.
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("水菜", "そのまま"),
-        ("カレールー", "調理キット"),
-        ("牛肉のおかずセット", "食材"),
+        ("水菜", "食材"),
+        ("カレールー", "食材"),
+        ("牛肉のおかずセット", "調理キット"),
     ],
 )
-def test_classify_item_preserves_questionable_current_behavior(
+def test_classify_item_handles_intended_substring_behavior(
     name: str, expected: str
 ) -> None:
     assert classify_item(name) == expected
