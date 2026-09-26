@@ -21,7 +21,7 @@ release_commits: 74e76dd77bfaf801136b4bd23cf84f3bbae7df3f, 84494fe963c7bca963de1
 
 impact_level: L3
 
-status: draft
+status: ready_for_review
 
 created_by: Codex
 
