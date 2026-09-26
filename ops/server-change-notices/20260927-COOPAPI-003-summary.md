@@ -12,15 +12,16 @@ app: coop-api
 
 source_branch: main
 
-source_commit: 03f65b2aa421a76d31833a25aa871a205d1e1896
+source_commit: 9d24a3be0db309402411bbd2899190825a428488
 
 production_baseline_commit: f26c2119ac5b3677916e5e4afe02242565a6da4f
 
-release_commits: 03f65b2aa421a76d31833a25aa871a205d1e1896, 116fbf5e993bfd6b1e9292036d17e7766d6cda3d, e5efee4d995c60154fcdfb680565bbf75c8aab10, 00890f1e761f0c38f89bf511200e93816e7c51b0, 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b, aa164021830355807c9592d41d9b9bfcdd3c641b, ba76f9744aa528d8e23421c1d3612d454223fa00, 84494fe963c7bca963de1bbfc73834fec79ba308, 74e76dd77bfaf801136b4bd23cf84f3bbae7df3f
+release_commits: 74e76dd77bfaf801136b4bd23cf84f3bbae7df3f, 84494fe963c7bca963de1bbfc73834fec79ba308, ba76f9744aa528d8e23421c1d3612d454223fa00, aa164021830355807c9592d41d9b9bfcdd3c641b, 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b, 00890f1e761f0c38f89bf511200e93816e7c51b0, e5efee4d995c60154fcdfb680565bbf75c8aab10, 116fbf5e993bfd6b1e9292036d17e7766d6cda3d, 03f65b2aa421a76d31833a25aa871a205d1e1896, 8543b416058ea6d9ee4feb3032d10156f707b191, aa5ef17d2edd33b39f7ab55eb43f82e60f8009c6, 9d24a3be0db309402411bbd2899190825a428488
+# baseline→source_commitの全commit（コード変更・notice/contract更新を含む）。
 
 impact_level: L3
 
-status: ready_for_review
+status: draft
 
 created_by: Codex
 
@@ -32,7 +33,7 @@ deployment_status: not_started
 
 ## 変更概要
 
-フィーチャーフラグで既定無効のJev商品分類を追加し、既存キーワード分類をフォールバックにする。分類結果への `classifier` / `classifier_confidence` の追加、Jev結果キャッシュファイルの導入、対象外行の既存excluded配列への追加、キーワード誤分類2件の修正を行う。task 20260927-002 では、cron取込時に前回と同じ注文内容なら分類・Jev問い合わせ・保存を省略し、保存データへ `source_fingerprint` を追加する。また、Jev判定照合漏れ時の既定分類をキーワード判定へ修正する。task 20260927-003 では、配布一覧に遅延importで必須となる `jev_classifier.py` を含め、runtime/data・配布経路の記述を実装と照合し、deploy前backupと復元条件を明確化した。
+フィーチャーフラグで既定無効のJev商品分類を追加し、既存キーワード分類をフォールバックにする。分類結果への `classifier` / `classifier_confidence` の追加、Jev結果キャッシュファイルの導入、対象外行の既存excluded配列への追加、キーワード誤分類2件の修正を行う。task 20260927-002 では、cron取込時に前回と同じ注文内容なら分類・Jev問い合わせ・保存を省略し、保存データへ `source_fingerprint` を追加する。また、Jev判定照合漏れ時の既定分類をキーワード判定へ修正する。task 20260927-003 では、配布一覧に遅延importで必須となる `jev_classifier.py` を含め、runtime/data・配布経路の記述を実装と照合し、deploy前backupと復元条件を明確化した。続く対話的セッションでの修正（B06対応）で、`ops/runtime-contract.yaml`と`CLAUDE.md`のdeploy経路記述を、実際の`deploy.sh`経由の自動経路（pip install含む）に一致させ、ポリシーhash照合結果の記述を訂正した。
 
 ## 変更理由
 
@@ -106,6 +107,7 @@ server_impact: approval_required
 - deploy手順の変更: 通常時なし。Jevを有効化する場合はenv provisioning（後述の同時実行対応完了後）が必要。
 - rollback方法: アプリartifactは直前versionへ手動再配置＋service再起動。dataのrollbackは、cronと手動書込（`/fetch`、カテゴリ・献立変更）を止め、現行data全体を復元前状態として別に退避する。日次またはdeploy直前backupを隔離先へ展開して検証後、正本パスへ切り替え、serviceと代表read flowを確認してから書込を再開する。復元前・復元後のdataは確認終了まで削除しない。artifact rollbackとdata rollbackは別手順として扱い、具体的な手順・保持先はVPS管理側の実施計画で確定する。
 - rollback不能条件: 復元元のbackupがなく、注文JSON等が上書きされた場合、元データの復元が困難。
+- 配布経路（COOPAPI-003-B06で訂正）: `deploy-coop-api.bat` → 共通 `deploy.bat coop-api <local_dir>` が `deploy-files.txt` 記載のファイルを `/opt/apps/coop-api/` へscp転送した後、sshでリモートの `/opt/apps/deploy.sh coop-api` を実行する。coop-apiは共通scriptの `USE_VENV=yes` 経路のため、この中で `pip install -q -r requirements.txt` を実行してからservice再起動まで行う（VPS管理側deployment記録で確認、2026-09-27）。今回`requirements.txt`自体は不変だが、pip installの工程自体は毎回実行される。`CLAUDE.md`の手動WinSCP手順は、この自動経路が使えない場合の代替として位置づけを明記した。
 
 ## Jev cacheの同時実行と有効化境界（COOPAPI-003-B04）
 
@@ -132,18 +134,19 @@ server_impact: approval_required
 - 新しいalert条件: なし。
 - secret/個人情報対策: key、商品名、応答本文をログへ含めない。Jev応答本文もキャッシュしない。
 
-## 提出前セルフチェック（2026-09-27 再提出）
+## 提出前セルフチェック（2026-09-27 3回目再提出）
 
 - production baseline: 確認済み。coop-api deployed source `f26c2119ac5b3677916e5e4afe02242565a6da4f`。
-- source commitとbaseline以降の全release commit/build差分: source commitは本taskのcommit 1。baselineからcommit 1までのrelease commit全件を記載する。notice文書のcommit 2はrelease_commitsへ含めない。
+- source commitとbaseline以降の全release commit/build差分: source commitを`9d24a3b`（B06対応のCLAUDE.md/runtime-contract.yaml修正）へ更新し、release_commitsをbaselineからの全commit（notice/contract更新を含む）で記載した。
 - B02/B03/B05: deploy直前backupと復元順序・レコード照合を記載。`coop_orders.json`上書き仕様、`custom_meals.json`のbackup要否、実際のdeploy経路をcontractへ反映。`.env`を除く配布候補5ファイルと遅延import依存の対応を検証。
+- B06: `ops/runtime-contract.yaml`の`deploy.entry`と`CLAUDE.md`のデプロイ手順を、実際の`deploy-coop-api.bat`→`deploy.bat`→リモート`/opt/apps/deploy.sh coop-api`（`USE_VENV=yes`経路でpip installを実行）経路に一致させた。手動WinSCP手順は自動経路が使えない場合の代替と明記した。ポリシーhash不一致の記述を、VPS管理側の照合結果（一致・差分は改行コードのみ）に訂正した。
 - data transaction、同時実行、途中失敗、再実行: cache一時ファイル置換と読書失敗時fallbackは実装済み。cron/`/fetch`間の排他制御は未実装（コード変更なし）。ただしCATEGORY_CLASSIFIER既定keyword・TYPESAFE_API_KEY未provisioningのため当該cache自体が現状生成されない。詳細は上記「Jev cacheの同時実行と有効化境界」参照。
 - image rollbackとdata rollback: artifact/dataを分け、deploy直前backup、書込停止、復元前data退避、隔離展開・検証、切替、read flow確認、保持条件を上記「Deploy・rollback」に記載した。
 - job/log/retention、runtime/dependency、client連携: schedule/runtime/依存追加/client配信は変更なし。`ops/runtime-contract.yaml`をschema v1へ更新し、env_vars・persistent_paths・jobs・dependencies・deployの各項目を反映した。
 - owner/review/production承認/client配信: app実装とproduction反映の承認を分離。今回deployなし。Jev有効化は別個のproduction承認事項として明記した。
 - B05配布候補import検証: 一覧5ファイルのみを一時ディレクトリへコピーし、`coop_parser`、`jev_classifier`、`fetch_coop_mail`、`coop_api_server`のimport成功を確認する。旧一覧から`jev_classifier.py`を除いた対照では`jev_classifier`のimport失敗を確認する。関数内遅延importを含むAST走査でローカルモジュール参照が配布一覧に含まれることを確認する。
-- notice status: commit 2で`ready_for_review`へ更新。remoteへのpushは行わない。
-- VPS運用ポリシー同期: 配布記録の旧hashと作業時点の正本hashが一致しないため、現行正本を優先。アプリ側共通指示のversion/hash同期は別途必要。
+- notice status: 本commitで`ready_for_review`へ更新し、push後にremote上のlocal/cached `main`と一致することを確認する。
+- VPS運用ポリシー同期: VPS管理側で配布版`AI_INSTRUCTIONS.md`と正本`application_ai_operations_instruction.md`のSHA-256を照合し、いずれも配布記録のhashと一致することを確認した（差分に見えたのは改行コードの違いのみ）。ポリシー再配布は不要。
 
 未確認・該当なしの理由: 実VPSでの同時実行実機検証、backupからの実restoreドリルは、production接続を伴うため本レビュー対応の範囲外（VPS管理側の別作業）。
 
@@ -163,7 +166,7 @@ VPS管理review（再審査）後に決定。
 
 ## Approval
 
-- app owner: task 20260927-001, 20260927-002の実装承認、およびtask 20260927-003のsource・文書変更と2 commit作成が承認済み。
-- VPS management review: 初回`blocked`（2026-09-27、B01〜B04）。B01/B04は解消済み。残blocker B02/B03/B05に対する本taskの対応を記録し、再審査依頼として提出（VPS管理レビュー記録（coop_api_server_notice_review_20260927））。
+- app owner: task 20260927-001, 20260927-002, 20260927-003の実装承認済み。B06対応（deploy経路記述の訂正）はユーザー依頼により対話的Claude Codeセッションで実施。
+- VPS management review: 初回`blocked`（B01〜B04）→再review`blocked`（B02・B03・B05残存）→再review`blocked`（B01/B04/B02/B03/B05解消、B06追加）。本更新はB06対応の再審査依頼として提出（VPS管理レビュー記録（coop_api_server_notice_review_20260927））。
 - production approval: 未取得
 - related task_id: 20260927-001, 20260927-002, 20260927-003
