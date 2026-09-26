@@ -5,6 +5,7 @@
 # ===========================================
 
 coop_parser.py
+jev_classifier.py
 fetch_coop_mail.py
 coop_api_server.py
 requirements.txt

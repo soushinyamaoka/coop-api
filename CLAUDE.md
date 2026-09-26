@@ -121,15 +121,14 @@ python coop_api_server.py
 ```
 
 ### VPSへのデプロイ
-デプロイ対象は `deploy-files.txt` に記載の5ファイル:
+デプロイ対象は `deploy-files.txt` に記載の5ファイル（`.env` は配布対象外で、転送・上書きしない）:
 ```
 coop_parser.py
+jev_classifier.py
 fetch_coop_mail.py
 coop_api_server.py
 requirements.txt
-.env
 ```
-
 ```bash
 # 1. WinSCP等でファイルを /home/ubuntu/coop_api/ にアップロード
 
