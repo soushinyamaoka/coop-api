@@ -8,6 +8,7 @@ COOPデリ注文確認メールのパーサー
 
 import re
 import json
+import hashlib
 from collections.abc import Callable
 from datetime import datetime
 
@@ -205,6 +206,28 @@ def normalize_ingredient_name(raw_name: str) -> str:
 # メール本文パース
 # ============================================================
 
+ORDER_LINE_PATTERN = r'注文番号：(\d+)\s*\n\s*商品名：(.+?)\s*\n\s*数量：(\d+)点'
+
+
+def extract_order_rows(body: str) -> list[dict]:
+    """注文内容を分類せずに抽出する（数量0点の行も含む）。"""
+    converted = zen_to_han(body)
+    return [
+        {"order_no": order_no, "name": raw_name.strip(), "quantity": int(quantity)}
+        for order_no, raw_name, quantity in re.findall(ORDER_LINE_PATTERN, converted)
+    ]
+
+
+def source_fingerprint(body: str) -> str:
+    """件名等に依存せず、注文行から決定的なSHA-256指紋を作る。"""
+    rows = extract_order_rows(body)
+    canonical = json.dumps(
+        sorted((row["order_no"], row["name"], row["quantity"]) for row in rows),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 def parse_coop_email(
     body: str,
     classifier: Callable[[str], dict] | None = None,
@@ -228,8 +251,7 @@ def parse_coop_email(
     converted = zen_to_han(body)
 
     # 商品ブロックを正規表現で抽出
-    pattern = r'注文番号：(\d+)\s*\n\s*商品名：(.+?)\s*\n\s*数量：(\d+)点'
-    matches = re.finditer(pattern, converted)
+    matches = re.finditer(ORDER_LINE_PATTERN, converted)
 
     ingredients = []
     kits = []
@@ -293,6 +315,7 @@ def parse_coop_email(
 
     return {
         "parsed_at": datetime.now().isoformat(timespec="seconds"),
+        "source_fingerprint": source_fingerprint(body),
         "total_items": total,
         "excluded_count": len(excluded),
         "ingredients": ingredients,
@@ -307,8 +330,7 @@ def parse_coop_email(
 def extract_product_names(body: str) -> list[str]:
     """Return raw order names without reading or writing application data."""
     converted = zen_to_han(body)
-    pattern = r'注文番号：(\d+)\s*\n\s*商品名：(.+?)\s*\n\s*数量：(\d+)点'
-    return [match.group(2).strip() for match in re.finditer(pattern, converted) if int(match.group(3)) > 0]
+    return [row["name"] for row in extract_order_rows(body) if row["quantity"] > 0]
 
 
 # ============================================================

@@ -24,7 +24,13 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from coop_parser import extract_product_names, parse_coop_email
+from coop_parser import (
+    classify_item,
+    extract_order_rows,
+    extract_product_names,
+    parse_coop_email,
+    source_fingerprint,
+)
 
 # ============================================================
 # 設定
@@ -38,7 +44,6 @@ GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
 
 # データ保存先
 DATA_DIR = Path(__file__).parent / "data"
-DATA_DIR.mkdir(exist_ok=True)
 
 # ログ設定（共通ログ規約 v1）
 _LEVEL_NAMES = {
@@ -179,7 +184,9 @@ def get_email_body(msg: Message) -> str:
 # IMAP接続 & メール取得
 # ============================================================
 
-def _fetch_coop_emails(days_back: int = 14) -> tuple[list[dict], bool]:
+def _fetch_coop_emails(
+    days_back: int = 14, skip_if_unchanged: bool = False
+) -> tuple[list[dict], bool]:
     """
     GmailからCOOPデリのメールを取得してパースする
 
@@ -318,6 +325,24 @@ def _fetch_coop_emails(days_back: int = 14) -> tuple[list[dict], bool]:
                     )
                     continue
 
+                # 同一注文なら分類（Jev問い合わせを含む）より前に終了する。
+                parsed_fingerprint = source_fingerprint(body)
+                if skip_if_unchanged:
+                    try:
+                        latest = json.loads((DATA_DIR / "coop_latest.json").read_text(encoding="utf-8"))
+                        previous_fingerprint = latest.get("source_fingerprint") if isinstance(latest, dict) else None
+                    except (OSError, UnicodeError, json.JSONDecodeError):
+                        previous_fingerprint = None
+                    if previous_fingerprint and previous_fingerprint == parsed_fingerprint:
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "import_skipped",
+                            reason="unchanged",
+                            item_count=len(extract_order_rows(body)),
+                        )
+                        return [], True
+
                 # パース
                 classifier = None
                 from jev_classifier import classifier_mode
@@ -337,7 +362,12 @@ def _fetch_coop_emails(days_back: int = 14) -> tuple[list[dict], bool]:
                             cache_path=DATA_DIR / "category_jev_cache.json",
                             overrides_path=DATA_DIR / "category_overrides.json",
                         )
-                        classifier = lambda name: decisions.get(name, {"choice": "食材", "source": "keyword"})
+                        def classifier(name):
+                            clean_name = name.strip()
+                            return decisions.get(
+                                clean_name,
+                                {"choice": classify_item(clean_name), "source": "keyword"},
+                            )
                         log_event(logger, logging.INFO, "jev_classification_summary", **jev_stats)
                 parsed = parse_coop_email(body, classifier=classifier)
                 parsed["email_subject"] = subject
@@ -425,7 +455,9 @@ def _fetch_coop_emails(days_back: int = 14) -> tuple[list[dict], bool]:
                 )
 
 
-def run_coop_mail_import(days_back: int = 14, save: bool = False) -> list[dict]:
+def run_coop_mail_import(
+    days_back: int = 14, save: bool = False, skip_if_unchanged: bool = False
+) -> list[dict]:
     """1回のメール取得をjob_start/job_endで囲み、必要なら結果を保存する。"""
     run_id = uuid.uuid4().hex
     started_at = time.monotonic()
@@ -439,7 +471,9 @@ def run_coop_mail_import(days_back: int = 14, save: bool = False) -> list[dict]:
     )
 
     try:
-        results, fetch_succeeded = _fetch_coop_emails(days_back=days_back)
+        results, fetch_succeeded = _fetch_coop_emails(
+            days_back=days_back, skip_if_unchanged=skip_if_unchanged
+        )
         if save and results:
             save_results(results)
         succeeded = fetch_succeeded
@@ -482,6 +516,8 @@ def save_results(results: list[dict]) -> None:
         log_event(logger, logging.INFO, "results_save_skipped", reason="no_results")
         return
 
+    DATA_DIR.mkdir(exist_ok=True)
+
     # 全結果をまとめたファイル
     all_data = {
         "last_updated": datetime.now().isoformat(timespec="seconds"),
@@ -512,7 +548,7 @@ def save_results(results: list[dict]) -> None:
 # ============================================================
 
 def main():
-    run_coop_mail_import(days_back=14, save=True)
+    run_coop_mail_import(days_back=14, save=True, skip_if_unchanged=True)
 
 
 if __name__ == "__main__":

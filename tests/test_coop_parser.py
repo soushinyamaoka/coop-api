@@ -6,6 +6,8 @@ from coop_parser import (
     classify_item,
     normalize_ingredient_name,
     parse_coop_email,
+    source_fingerprint,
+    extract_order_rows,
     zen_to_han,
 )
 
@@ -137,3 +139,21 @@ def test_parse_coop_email_extracts_sample_orders() -> None:
             "reason": "数量0点（未注文）",
         }
     ]
+    assert result["source_fingerprint"] == source_fingerprint(SAMPLE_EMAIL)
+
+
+def test_fingerprint_ignores_row_order_and_surrounding_name_whitespace() -> None:
+    first = "注文番号：1\n商品名：  しょうゆ  \n数量：1点\n注文番号：2\n商品名：架空野菜\n数量：0点"
+    second = "Subject: another date\n注文番号：2\n商品名：架空野菜\n数量：0点\n注文番号：1\n商品名：しょうゆ\n数量：1点"
+    assert source_fingerprint(first) == source_fingerprint(second)
+    assert len(extract_order_rows(first)) == 2
+
+
+@pytest.mark.parametrize("changed", [
+    "注文番号：1\n商品名：しょうゆ\n数量：2点",
+    "注文番号：1\n商品名：みそ\n数量：1点",
+    "注文番号：1\n商品名：しょうゆ\n数量：0点",
+])
+def test_fingerprint_changes_with_order_content(changed: str) -> None:
+    original = "注文番号：1\n商品名：しょうゆ\n数量：1点"
+    assert source_fingerprint(original) != source_fingerprint(changed)
