@@ -17,10 +17,12 @@ source_commit: 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b
 production_baseline_commit: f26c2119ac5b3677916e5e4afe02242565a6da4f
 
 release_commits: 74e76dd, 84494fe, ba76f97, aa16402, 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b
+# 上記はコード変更のrelease範囲（baseline→source_commit）。本notice文書自体の更新commit（00890f1, e5efee4,
+# および本status変更commit）はコードのrelease範囲に含めない（Approval節に記載）。
 
 impact_level: L3
 
-status: draft
+status: ready_for_review
 
 created_by: Codex
 
@@ -132,7 +134,7 @@ server_impact: approval_required
 - image rollbackとdata rollback: artifact rollbackとJSON backup restoreの手順を上記「Data・migration・backup」「Deploy・rollback」に具体化した。
 - job/log/retention、runtime/dependency、client連携: schedule/runtime/依存追加/client配信は変更なし。`ops/runtime-contract.yaml`をschema v1へ更新し、env_vars・persistent_paths・jobs・dependencies・deployの各項目を反映した。
 - owner/review/production承認/client配信: app実装とproduction反映の承認を分離。今回deployなし。Jev有効化は別個のproduction承認事項として明記した。
-- notice status: 本ドキュメント更新をcommit・push後に`ready_for_review`へ更新する（下記notice_commit参照）。
+- notice status: 本commitで`ready_for_review`へ更新し、push後にremote上のlocal/cached `main`と一致することを確認する。
 
 未確認・該当なしの理由: 実VPSでの同時実行実機検証、backupからの実restoreドリルは、production接続を伴うため本レビュー対応の範囲外（VPS管理側の別作業）。
 
@@ -153,8 +155,7 @@ VPS管理review（再審査）後に決定。
 
 ## Approval
 
-- app owner: task 20260927-001, 20260927-002で実装承認済み。本ドキュメント更新（B01〜B04対応）はユーザー依頼により対話的Claude Codeセッションで実施。
-- VPS management review: 初回`blocked`（2026-09-27、B01〜B04）。本更新は再審査依頼として提出。
+- app owner: task 20260927-001, 20260927-002で実装承認済み。本ドキュメント更新（B01〜B04対応、commit `e5efee4`および本status変更commit）はユーザー依頼により対話的Claude Codeセッションで実施。
+- VPS management review: 初回`blocked`（2026-09-27、B01〜B04、レビュー正本 `C:\Users\devuser\.codex\worktrees\5864\vps-server-management\docs\operations\coop_api_server_notice_review_20260927.md`）。本更新は再審査依頼として提出。
 - production approval: 未取得
 - related task_id: 20260927-001, 20260927-002
-- notice_commit: 確定後に追記（下記参照）
