@@ -106,7 +106,11 @@ dependencies:
       condition: CATEGORY_CLASSIFIER=jev かつ TYPESAFE_API_KEY設定時のみ。現状production未有効化。
 
 deploy:
-  entry: deploy-coop-api.batから共通deploy.bat coop-api <local_dir>を実行し、deploy-files.txt記載のファイルを/opt/apps/coop-api/へscp転送後にserviceを再起動する。pip installは行わない。.envとdata/は転送しない。
+  entry: >
+    deploy-coop-api.batから共通deploy.bat coop-api <local_dir>を実行し、deploy-files.txt記載の
+    ファイルを/opt/apps/coop-api/へscp転送した後、ssh経由でリモートの/opt/apps/deploy.sh coop-apiを
+    実行する。この共通script側でcoop-apiはUSE_VENV=yes経路のため、pip install -q -r requirements.txt
+    を実行してからserviceを再起動する（VPS管理側deployment記録で確認、2026-09-27）。.envとdata/は転送しない。
   downtime: brief-restart
   rollback: 直前artifactの手動再配置＋再起動。data側のrollbackは data.persistent_paths のbackup（OPS-BKP-04）からの復元による。artifact rollbackとdata rollbackは別手順。
 

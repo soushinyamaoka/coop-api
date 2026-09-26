@@ -121,6 +121,17 @@ python coop_api_server.py
 ```
 
 ### VPSへのデプロイ
+
+> **現行のデプロイ経路（2026-09-27確認）**: 以下の手動WinSCP手順は旧構成のものです。現行は
+> `C:\work\PRG\Sakura\Dev\deploy\recipe-api\deploy-coop-api.bat` → 共通 `deploy.bat coop-api <local_dir>`
+> を実行する自動経路で、次を行います。
+> 1. `deploy-files.txt` 記載のファイルを `/opt/apps/coop-api/` へscp転送
+> 2. sshでリモートの `/opt/apps/deploy.sh coop-api` を実行（VPS管理側の共通script。coop-apiは
+>    `USE_VENV=yes` 経路のため、この中で `pip install -q -r requirements.txt` を実行してから
+>    service再起動まで行う。手動でのpip install・systemctl再起動は不要）
+>
+> `.env` と `data/` はこの経路で転送されない（`deploy-files.txt` のコメント参照）。
+
 デプロイ対象は `deploy-files.txt` に記載の5ファイル（`.env` は配布対象外で、転送・上書きしない）:
 ```
 coop_parser.py
@@ -129,6 +140,9 @@ fetch_coop_mail.py
 coop_api_server.py
 requirements.txt
 ```
+
+以下は上記スクリプトが到達できない場合の手動代替手順（旧`/home/ubuntu`パス表記のまま、現行の
+配置先パス・venv構成は要確認）:
 ```bash
 # 1. WinSCP等でファイルを /home/ubuntu/coop_api/ にアップロード
 
