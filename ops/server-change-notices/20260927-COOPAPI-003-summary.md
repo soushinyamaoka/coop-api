@@ -12,11 +12,11 @@ app: coop-api
 
 source_branch: main
 
-source_commit: 未確定（task 20260927-002 の実装commit後に記入）
+source_commit: 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b
 
 production_baseline_commit: f26c2119ac5b3677916e5e4afe02242565a6da4f
 
-release_commits: 74e76dd, 84494fe, ba76f97, aa16402, task 20260927-002 の実装commit（確定後に記入）
+release_commits: 74e76dd, 84494fe, ba76f97, aa16402, 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b
 
 impact_level: L3
 
@@ -114,20 +114,20 @@ server_impact: approval_required
 ## 提出前セルフチェック
 
 - production baseline: 確認済み。coop-api deployed source `f26c2119ac5b3677916e5e4afe02242565a6da4f`。
-- source commitとbaseline以降の全release commit/build差分: task 20260927-002 の実装commit後に確定。
+- source commitとbaseline以降の全release commit/build差分: source commitとrelease commitを記録済み。remote pushはtaskで禁止のため未実施。
 - data transaction、同時実行、途中失敗、再実行: 実装ではcache一時ファイル置換と読書失敗時fallbackを追加。実VPSでの同時worker動作、注文JSON rollbackは未検証。
 - image rollbackとdata rollback: artifact rollbackとJSON backup restoreを分ける必要あり。restore手順はVPS管理review待ち。
 - job/log/retention、runtime/dependency、client連携: schedule/runtime/依存追加/client配信は変更なし。cache retention方針とログ監視はVPS管理側で確認。
 - owner/review/production承認/client配信: app実装とproduction反映の承認を分離。今回deployなし。
-- noticeはdraftのまま。未commit・未pushのためready_for_reviewではない。
+- noticeはdraftのまま。push禁止のためremote未提出で、ready_for_reviewではない。
 
-未確認・該当なしの理由: task 20260927-002 の実装commitは作成前。VPS側同時実行・data restore・cache retentionはproductionに接続できない無人taskのため未確認。
+未確認・該当なしの理由: VPS側同時実行・data restore・cache retentionはproductionに接続できない無人taskのため未確認。remote pushもtaskで禁止。
 
 ## 未解決事項
 
 - VPS管理側で注文JSONのbackup/rollbackとcache retentionを決定する。
 - Jevをproductionで有効化する場合、TYPESAFE_API_KEYのprovisioningと商品名送信の最終確認を行う。
-- task 20260927-002 の実装commitはまだ作成前。commit後にsource/release情報を確定する。このnoticeはdraftのまま。
+- source/release commitは確定済み。VPS管理review前のdraftであり、taskでpushは禁止されている。
 
 ## 希望時期
 
