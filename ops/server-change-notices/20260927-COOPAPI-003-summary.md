@@ -166,4 +166,4 @@ VPS管理review（再審査）後に決定。
 - app owner: task 20260927-001, 20260927-002の実装承認、およびtask 20260927-003のsource・文書変更と2 commit作成が承認済み。
 - VPS management review: 初回`blocked`（2026-09-27、B01〜B04）。B01/B04は解消済み。残blocker B02/B03/B05に対する本taskの対応を記録し、再審査依頼として提出（VPS管理レビュー記録（coop_api_server_notice_review_20260927））。
 - production approval: 未取得
-- related task_id: 20260927-001, 20260927-002
+- related task_id: 20260927-001, 20260927-002, 20260927-003
