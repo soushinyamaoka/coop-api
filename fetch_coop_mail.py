@@ -20,6 +20,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -119,6 +120,53 @@ def log_event(log: logging.Logger, level: int, event: str, **fields) -> None:
 configure_logging()
 logger = logging.getLogger(__name__)
 _warned_missing_jev_key = False
+
+
+class ImportBusyError(Exception):
+    """Raised when another process or thread owns the import lock."""
+
+
+@contextmanager
+def _coop_import_lock():
+    """Take a non-blocking OS lock shared by cron and API imports."""
+    lock_path = DATA_DIR / ".coop_import.lock"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_path, "a+b")
+    locked = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(lock_file.fileno()).st_size == 0:
+                lock_file.seek(0)
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise ImportBusyError from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise ImportBusyError from exc
+        locked = True
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
 
 
 # ============================================================
@@ -471,13 +519,23 @@ def run_coop_mail_import(
     )
 
     try:
-        results, fetch_succeeded = _fetch_coop_emails(
-            days_back=days_back, skip_if_unchanged=skip_if_unchanged
-        )
-        if save and results:
-            save_results(results)
-        succeeded = fetch_succeeded
-        return results
+        try:
+            with _coop_import_lock():
+                log_event(logger, logging.INFO, "import_lock", result="acquired")
+                results, fetch_succeeded = _fetch_coop_emails(
+                    days_back=days_back, skip_if_unchanged=skip_if_unchanged
+                )
+                if save and results:
+                    save_results(results)
+                succeeded = fetch_succeeded
+                return results
+        except ImportBusyError:
+            log_event(logger, logging.INFO, "import_lock", result="busy")
+            log_event(logger, logging.INFO, "import_skipped", reason="locked")
+            succeeded = True
+            if skip_if_unchanged:
+                return []
+            raise
     except Exception as exc:
         log_event(
             logger,

@@ -1,5 +1,8 @@
 import json
+import subprocess
+import sys
 import shutil
+import threading
 import uuid
 from email.message import EmailMessage
 
@@ -142,3 +145,99 @@ def test_jev_decision_matches_stripped_name(monkeypatch, tmp_path):
     assert success
     assert classifier_calls == [["架空品"]]
     assert result[0]["seasonings"][0]["classifier"] == "jev"
+
+
+def _child_lock_attempt(data_dir, *, exit_after_lock=False):
+    code = (
+        "import os, sys, dotenv\n"
+        "dotenv.load_dotenv=lambda *a, **k: False\n"
+        "from pathlib import Path\n"
+        "from fetch_coop_mail import _coop_import_lock, ImportBusyError\n"
+        "import fetch_coop_mail as f\n"
+        "f.DATA_DIR=Path(sys.argv[1])\n"
+        "try:\n"
+        " with _coop_import_lock():\n"
+        "  os._exit(0) if len(sys.argv)>2 else print('acquired')\n"
+        "except ImportBusyError:\n print('busy')\n"
+    )
+    args = [sys.executable, "-c", code, str(data_dir)]
+    if exit_after_lock:
+        args.append("crash")
+    return subprocess.run(args, capture_output=True, text=True, timeout=10)
+
+
+def test_file_lock_blocks_other_process_and_releases(monkeypatch, tmp_path):
+    monkeypatch.setattr(fetch, "DATA_DIR", tmp_path / "data")
+    with fetch._coop_import_lock():
+        result = _child_lock_attempt(fetch.DATA_DIR)
+        assert result.returncode == 0
+        assert result.stdout.strip() == "busy"
+    result = _child_lock_attempt(fetch.DATA_DIR)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "acquired"
+
+
+def test_file_lock_blocks_another_thread(monkeypatch, tmp_path):
+    monkeypatch.setattr(fetch, "DATA_DIR", tmp_path / "data")
+    outcomes = []
+    with fetch._coop_import_lock():
+        def attempt():
+            try:
+                with fetch._coop_import_lock():
+                    outcomes.append("acquired")
+            except fetch.ImportBusyError:
+                outcomes.append("busy")
+
+        thread = threading.Thread(target=attempt)
+        thread.start()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert outcomes == ["busy"]
+
+
+def test_abnormal_process_exit_releases_lock_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(fetch, "DATA_DIR", tmp_path / "data")
+    result = _child_lock_attempt(fetch.DATA_DIR, exit_after_lock=True)
+    assert result.returncode == 0
+    assert (fetch.DATA_DIR / ".coop_import.lock").exists()
+    result = _child_lock_attempt(fetch.DATA_DIR)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "acquired"
+
+
+def test_cron_skips_when_lock_is_held(monkeypatch, tmp_path, caplog):
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(fetch, "DATA_DIR", data_dir)
+    monkeypatch.setattr(fetch, "_fetch_coop_emails", lambda **_kwargs: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(fetch, "save_results", lambda _results: (_ for _ in ()).throw(AssertionError()))
+    with fetch._coop_import_lock():
+        assert fetch.run_coop_mail_import(save=True, skip_if_unchanged=True) == []
+    skipped = [record for record in caplog.records if getattr(record, "event", None) == "import_skipped"]
+    job_ends = [record for record in caplog.records if getattr(record, "event", None) == "job_end"]
+    assert len(skipped) == 1
+    assert skipped[0].event_fields == {"reason": "locked"}
+    assert len(job_ends) == 1
+    assert job_ends[0].event_fields["status"] == "success"
+
+
+def test_fetch_endpoint_returns_busy_without_running_import(monkeypatch):
+    from pathlib import Path
+
+    with patch("dotenv.load_dotenv", return_value=False), patch.object(Path, "mkdir"):
+        import coop_api_server as server
+
+    monkeypatch.setattr(server, "verify_token", lambda _authorization: None)
+    monkeypatch.setattr(
+        server,
+        "run_coop_mail_import",
+        lambda **_kwargs: (_ for _ in ()).throw(fetch.ImportBusyError()),
+    )
+    from fastapi.testclient import TestClient
+
+    response = TestClient(server.app).post("/api/coop/fetch")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "busy",
+        "message": "別の取込処理を実行中です。しばらくしてから再度お試しください。",
+        "orders": 0,
+    }

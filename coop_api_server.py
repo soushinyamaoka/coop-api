@@ -28,7 +28,12 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from coop_parser import parse_coop_email, classify_item
-from fetch_coop_mail import configure_logging, log_event, run_coop_mail_import
+from fetch_coop_mail import (
+    ImportBusyError,
+    configure_logging,
+    log_event,
+    run_coop_mail_import,
+)
 
 # ============================================================
 # 設定
@@ -315,7 +320,14 @@ def fetch_emails(
     """
     verify_token(authorization)
 
-    results = run_coop_mail_import(days_back=days_back, save=True)
+    try:
+        results = run_coop_mail_import(days_back=days_back, save=True)
+    except ImportBusyError:
+        return {
+            "status": "busy",
+            "message": "別の取込処理を実行中です。しばらくしてから再度お試しください。",
+            "orders": 0,
+        }
 
     if results:
         return {

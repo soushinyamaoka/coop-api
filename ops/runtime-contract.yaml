@@ -47,9 +47,9 @@ config:
     - { name: TYPESAFE_API_KEY, required: false, secret: true }        # 2026-09-27追加。CATEGORY_CLASSIFIER=jev時のみ実質必須。値未設定ならjev指定でもkeywordへfallback
   secret_provisioning: manual
   note: >
-    TYPESAFE_API_KEYは現時点でVPSにprovisioningしない。CATEGORY_CLASSIFIERはproductionで既定の
-    keywordのまま運用し、jevへの切り替えとkey provisioningは本ファイル改定とは別のproduction承認
-    事項として扱う（notice 20260927-COOPAPI-003の対象外）。
+    Jev有効化（CATEGORY_CLASSIFIER=jevへの切替とTYPESAFE_API_KEYのprovisioning）はnotice
+    20260927-COOPAPI-004で申請中。VPS管理レビューと別途production承認が完了するまでは
+    keyword分類を維持し、keyをprovisioningしない。
 
 data:
   databases: []
@@ -76,6 +76,10 @@ data:
       note: >
         2026-09-27新規。商品名→Jev判定結果のcacheのみ。欠損・破損時は空cacheとして継続し、
         次回Jev問い合わせ時に再生成される。CATEGORY_CLASSIFIER=jev未使用の現状は生成されない。
+    - path: /opt/apps/coop-api/data/.coop_import.lock
+      backup_required: false
+      regenerable: true
+      note: OSがロック状態を管理するための空または未使用内容のファイル。残存しても次回取得を妨げない。
   migrations: none
 
 jobs:
@@ -87,14 +91,14 @@ jobs:
       stdout構造化ログの job_end イベント（job=coop-mail-import, status=success|failure,
       duration_ms）。2026-09-27時点で監視システムへの自動連携（alert等）は未整備、ログ上の確認のみ。
       同一注文時は import_skipped（reason=unchanged）を伴う success として記録される。
-    concurrency_control: none
+    concurrency_control: file_lock
     concurrency_note: >
-      cron（07:00/20:00 JST固定）と手動 `POST /api/coop/fetch` は別プロセス/別リクエストで、
-      両者およびcron同士の同時実行を防ぐ排他制御（lock等）は実装されていない。
-      CATEGORY_CLASSIFIER=keyword（既定）の間は data/category_jev_cache.json への書き込みが
-      発生しないため、この経路の同時実行競合は実質的に発生しない。CATEGORY_CLASSIFIER=jev への
-      切り替えを承認する際は、cache read-modify-writeの直列化（lock実装と検証）を前提条件とし、
-      その実装・検証は本ファイルの現バージョンの範囲外（Jev有効化のproduction承認事項側で扱う）。
+      cron（07:00/20:00 JST固定）と手動 `POST /api/coop/fetch` の双方が
+      data/.coop_import.lockを使い、IMAP取得、同一注文判定、分類（Jev cacheのread-modify-writeを含む）、
+      注文JSON保存をプロセス間・スレッド間で直列化する。ロック取得に失敗したcronは
+      import_skipped（reason=locked）を記録してsuccessで終了し、/fetchは待機せずHTTP 200の
+      status=busyを返す。プロセス異常終了時はOSがロックを解放するため、残ったロックファイルは
+      次回取得を妨げない。
 
 dependencies:
   internal: [recipe-generator, recipe-search]
