@@ -12,13 +12,11 @@ app: coop-api
 
 source_branch: main
 
-source_commit: 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b
+source_commit: 03f65b2aa421a76d31833a25aa871a205d1e1896
 
 production_baseline_commit: f26c2119ac5b3677916e5e4afe02242565a6da4f
 
-release_commits: 74e76dd, 84494fe, ba76f97, aa16402, 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b
-# 上記はコード変更のrelease範囲（baseline→source_commit）。本notice文書自体の更新commit（00890f1, e5efee4,
-# および本status変更commit）はコードのrelease範囲に含めない（Approval節に記載）。
+release_commits: 03f65b2aa421a76d31833a25aa871a205d1e1896, 116fbf5e993bfd6b1e9292036d17e7766d6cda3d, e5efee4d995c60154fcdfb680565bbf75c8aab10, 00890f1e761f0c38f89bf511200e93816e7c51b0, 9cda9fe9c0b57f1b400f94cfc2962f337cc1dd7b, aa164021830355807c9592d41d9b9bfcdd3c641b, ba76f9744aa528d8e23421c1d3612d454223fa00, 84494fe963c7bca963de1bbfc73834fec79ba308, 74e76dd77bfaf801136b4bd23cf84f3bbae7df3f
 
 impact_level: L3
 
@@ -34,7 +32,7 @@ deployment_status: not_started
 
 ## 変更概要
 
-フィーチャーフラグで既定無効のJev商品分類を追加し、既存キーワード分類をフォールバックにする。分類結果への `classifier` / `classifier_confidence` の追加、Jev結果キャッシュファイルの導入、対象外行の既存excluded配列への追加、キーワード誤分類2件の修正を行う。task 20260927-002 では、cron取込時に前回と同じ注文内容なら分類・Jev問い合わせ・保存を省略し、保存データへ `source_fingerprint` を追加する。また、Jev判定照合漏れ時の既定分類をキーワード判定へ修正する。
+フィーチャーフラグで既定無効のJev商品分類を追加し、既存キーワード分類をフォールバックにする。分類結果への `classifier` / `classifier_confidence` の追加、Jev結果キャッシュファイルの導入、対象外行の既存excluded配列への追加、キーワード誤分類2件の修正を行う。task 20260927-002 では、cron取込時に前回と同じ注文内容なら分類・Jev問い合わせ・保存を省略し、保存データへ `source_fingerprint` を追加する。また、Jev判定照合漏れ時の既定分類をキーワード判定へ修正する。task 20260927-003 では、配布一覧に遅延importで必須となる `jev_classifier.py` を含め、runtime/data・配布経路の記述を実装と照合し、deploy前backupと復元条件を明確化した。
 
 ## 変更理由
 
@@ -57,10 +55,11 @@ server_impact: approval_required
 | 外部接続 | 分類時の外部接続なし | Jev有効時に商品名ごとにapi.typesafe.aiへ要求。低信頼・失敗はキーワードへfallback |
 | 保存データ | 注文JSONにcategory | classifierと採用時のconfidenceを追加。別ファイルに商品名と判定結果のみをcache |
 | 対象外行 | 0点注文のみexcluded | 高信頼の対象外行も既存excludedへ追加 |
+| 配布artifact | `deploy-files.txt`の一覧に `jev_classifier.py` がない | 関数内遅延importを含むアプリ内ローカルmoduleを全て一覧に含める。`.env` と `data/` は転送対象外 |
 
 ## 影響対象
 
-- service/container: coop-api serviceおよび定期workerのアプリコード。service定義変更なし。
+- service/container: coop-api serviceおよび定期workerのアプリコード。service定義変更なし。配布候補のPythonファイル一覧へ`jev_classifier.py`を追加。
 - URL/port/health: 変更なし。
 - cron/timer/worker: schedule変更なし。workerは同一注文時に分類・Jev問い合わせ・保存を省略し、注文内容変更時のみ通常処理する。`job_end` は成功として記録する。
 - dependency: 新規依存なし。既存httpxを使用。
@@ -103,10 +102,10 @@ server_impact: approval_required
 
 ## Deploy・rollback
 
-- deploy前提: notice受理、VPS管理review、backup/rollback手順確定（上記restore手順）、必要なproduction承認。
+- deploy前提: cron（07:00 / 20:00 JST）と重ならない時間帯を選び、手動 `/fetch` とカテゴリ・献立の変更操作を止めて整合した時点を作る。その時点の `/opt/apps/coop-api/data` 全体を即時退避し、checksum・取得日時・保持先を記録する（毎日の `OPS-BKP-04` とは別）。具体的な保持先と書込停止方法はVPS管理側のproduction実施計画で確定する。healthと代表read flowの確認が終わるまで退避物を保持する。加えてnotice受理、VPS管理review、rollback手順確定、必要なproduction承認を要する。
 - deploy手順の変更: 通常時なし。Jevを有効化する場合はenv provisioning（後述の同時実行対応完了後）が必要。
-- rollback方法: アプリartifactは直前versionへ手動再配置＋service再起動。dataのrollbackは上記restore手順に従い、`/var/backups/vps-app-db/coop-api/`のbackupから復元する。artifact rollbackとdata rollbackは別手順として扱う。
-- rollback不能条件: rollback前に旧バックアップがなく注文JSONが上書きされた場合、元の自動分類値の復元が困難。
+- rollback方法: アプリartifactは直前versionへ手動再配置＋service再起動。dataのrollbackは、cronと手動書込（`/fetch`、カテゴリ・献立変更）を止め、現行data全体を復元前状態として別に退避する。日次またはdeploy直前backupを隔離先へ展開して検証後、正本パスへ切り替え、serviceと代表read flowを確認してから書込を再開する。復元前・復元後のdataは確認終了まで削除しない。artifact rollbackとdata rollbackは別手順として扱い、具体的な手順・保持先はVPS管理側の実施計画で確定する。
+- rollback不能条件: 復元元のbackupがなく、注文JSON等が上書きされた場合、元データの復元が困難。
 
 ## Jev cacheの同時実行と有効化境界（COOPAPI-003-B04）
 
@@ -117,8 +116,15 @@ server_impact: approval_required
 ## Health・テスト
 
 - health contract変更: なし。
-- 実施テスト: task 20260927-001 は `.venv-codex`でpytest 52件pass。task 20260927-002 は `.venv-codex`でpytest 64件pass、`PYTHONIOENCODING=utf-8 python coop_parser.py` exit 0、`git diff --check` pass。モックIMAP/分類器を使い、実メール・外部APIなし。
+- 実施テスト: task 20260927-001 は `.venv-codex`でpytest 52件pass。task 20260927-002 は `.venv-codex`でpytest 64件pass、`PYTHONIOENCODING=utf-8 python coop_parser.py` exit 0、`git diff --check` pass。task 20260927-003 はpytest 64件pass、`PYTHONIOENCODING=utf-8 python coop_parser.py` exit 0、配布候補5ファイルのみの隔離import pass、旧一覧の `jev_classifier` import失敗を確認。AST全走査でローカルmodule依存を網羅し、配布一覧との包含を確認。モックIMAP/分類器を使い、実メール・外部APIなし。
 - 未実施テストと理由: production/VPS接続、実Jev API接続、cron実機検証はtaskで禁止。同一注文のmockテストは実施したが、VPS上でのcron実行・既存JSONへの初回fallbackは未確認。
+
+## Data復元時の構造検証（B02）
+
+- `coop_orders.json`: `orders`配列の各レコードについて、`total_items`が`ingredients`、`kits`、`ready_to_eat`、`baby_food`、`seasonings`各配列の要素数合計と一致し、`excluded_count`が`excluded`配列の要素数と一致することを確認する。数量0の商品と分類結果が「対象外」の商品はいずれもカテゴリ配列ではなく`excluded`へ入り、`total_items`には含まれない。
+- `coop_latest.json`: 単一レコードに対し、同じ5カテゴリ配列の要素数合計と`total_items`、および`excluded`配列の要素数と`excluded_count`を照合する。
+- `category_overrides.json` / `custom_meals.json`: JSONとしてparse可能で、トップレベルが辞書であることを確認する。
+- 復元ドリルそのものは別のproduction作業として扱い、本taskでは実施しない。
 
 ## Log・監視
 
@@ -129,12 +135,15 @@ server_impact: approval_required
 ## 提出前セルフチェック（2026-09-27 再提出）
 
 - production baseline: 確認済み。coop-api deployed source `f26c2119ac5b3677916e5e4afe02242565a6da4f`。
-- source commitとbaseline以降の全release commit/build差分: コード変更のsource commit（`9cda9fe`）は不変。本noticeとruntime-contract.yamlのdoc更新はこのcommit以降のrelease_commitsへ追加する（下記notice_commit参照）。
+- source commitとbaseline以降の全release commit/build差分: source commitは本taskのcommit 1。baselineからcommit 1までのrelease commit全件を記載する。notice文書のcommit 2はrelease_commitsへ含めない。
+- B02/B03/B05: deploy直前backupと復元順序・レコード照合を記載。`coop_orders.json`上書き仕様、`custom_meals.json`のbackup要否、実際のdeploy経路をcontractへ反映。`.env`を除く配布候補5ファイルと遅延import依存の対応を検証。
 - data transaction、同時実行、途中失敗、再実行: cache一時ファイル置換と読書失敗時fallbackは実装済み。cron/`/fetch`間の排他制御は未実装（コード変更なし）。ただしCATEGORY_CLASSIFIER既定keyword・TYPESAFE_API_KEY未provisioningのため当該cache自体が現状生成されない。詳細は上記「Jev cacheの同時実行と有効化境界」参照。
-- image rollbackとdata rollback: artifact rollbackとJSON backup restoreの手順を上記「Data・migration・backup」「Deploy・rollback」に具体化した。
+- image rollbackとdata rollback: artifact/dataを分け、deploy直前backup、書込停止、復元前data退避、隔離展開・検証、切替、read flow確認、保持条件を上記「Deploy・rollback」に記載した。
 - job/log/retention、runtime/dependency、client連携: schedule/runtime/依存追加/client配信は変更なし。`ops/runtime-contract.yaml`をschema v1へ更新し、env_vars・persistent_paths・jobs・dependencies・deployの各項目を反映した。
 - owner/review/production承認/client配信: app実装とproduction反映の承認を分離。今回deployなし。Jev有効化は別個のproduction承認事項として明記した。
-- notice status: 本commitで`ready_for_review`へ更新し、push後にremote上のlocal/cached `main`と一致することを確認する。
+- B05配布候補import検証: 一覧5ファイルのみを一時ディレクトリへコピーし、`coop_parser`、`jev_classifier`、`fetch_coop_mail`、`coop_api_server`のimport成功を確認する。旧一覧から`jev_classifier.py`を除いた対照では`jev_classifier`のimport失敗を確認する。関数内遅延importを含むAST走査でローカルモジュール参照が配布一覧に含まれることを確認する。
+- notice status: commit 2で`ready_for_review`へ更新。remoteへのpushは行わない。
+- VPS運用ポリシー同期: 配布記録の旧hashと作業時点の正本hashが一致しないため、現行正本を優先。アプリ側共通指示のversion/hash同期は別途必要。
 
 未確認・該当なしの理由: 実VPSでの同時実行実機検証、backupからの実restoreドリルは、production接続を伴うため本レビュー対応の範囲外（VPS管理側の別作業）。
 
@@ -150,12 +159,11 @@ VPS管理review（再審査）後に決定。
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: 表示済み（[[vps-management-handoff-template]]定型文）。
-- VPS管理チャットへ渡すローカル絶対path: `C:\work\PRG\HomeTools\meal-planner\api\coop-api\ops\server-change-notices\20260927-COOPAPI-003-summary.md`
+- ユーザーへの案内: この無人経路では案内文を作成しない。通知pathはresultから参照。
 
 ## Approval
 
-- app owner: task 20260927-001, 20260927-002で実装承認済み。本ドキュメント更新（B01〜B04対応、commit `e5efee4`および本status変更commit）はユーザー依頼により対話的Claude Codeセッションで実施。
-- VPS management review: 初回`blocked`（2026-09-27、B01〜B04、レビュー正本 `C:\Users\devuser\.codex\worktrees\5864\vps-server-management\docs\operations\coop_api_server_notice_review_20260927.md`）。本更新は再審査依頼として提出。
+- app owner: task 20260927-001, 20260927-002の実装承認、およびtask 20260927-003のsource・文書変更と2 commit作成が承認済み。
+- VPS management review: 初回`blocked`（2026-09-27、B01〜B04）。B01/B04は解消済み。残blocker B02/B03/B05に対する本taskの対応を記録し、再審査依頼として提出（VPS管理レビュー記録（coop_api_server_notice_review_20260927））。
 - production approval: 未取得
 - related task_id: 20260927-001, 20260927-002
