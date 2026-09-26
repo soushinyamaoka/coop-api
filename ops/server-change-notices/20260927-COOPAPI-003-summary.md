@@ -64,6 +64,7 @@ server_impact: approval_required
 - dependency: 新規依存なし。既存httpxを使用。
 - data/DB/volume: data/category_jev_cache.jsonを新規作成。coop_latest.json / coop_orders.jsonに追加項目と分類値が保存される。`source_fingerprint` は正規化・整列した注文番号、商品名、数量のSHA-256で、既存データは移行不要。同一注文判定は既存latestのfield欠損・破損時に通常処理へfallbackする。
 - log/monitoring: Jev件数、cache hit、採用、fallback、エラー種別の集計ログと、同一注文時の `import_skipped` イベントを追加。商品名、指紋、API key、応答本文は出力しない。
+- runtime contract: `ops/runtime-contract.yaml` をschema v1へ更新（env_vars、persistent_paths、jobs、dependencies、deployの各項目を反映）。
 
 ## production変更
 
@@ -82,22 +83,34 @@ server_impact: approval_required
 
 - 変更: あり
 - 変数名・secret種類のみ: CATEGORY_CLASSIFIER、TYPESAFE_API_KEY（TypeSafe API credential）
-- provisioning/rotation: Jevを有効化する場合のみVPS管理レビュー後にprovisioning。値はこのnoticeに記録しない。
+- provisioning/rotation: Jevを有効化する場合のみVPS管理レビュー後にprovisioning。値はこのnoticeに記録しない。`ops/runtime-contract.yaml`の`config.note`に、現時点でprovisioningしない方針を明記した。
 
 ## Data・migration・backup
 
-- schema/format変更: 注文itemへclassifierを追加、Jev採用時はclassifier_confidenceを追加。対象外はexcludedへ。
-- migration: 既存注文JSONのmigrationなし。新cacheは欠損・破損時に空cacheとして継続する。
-- backup対象: category_jev_cache.json、coop_latest.json、coop_orders.json。
-- restore確認: 未実施。cacheは再生成可能だが、注文JSONの分類値を戻す手順はVPS管理reviewで確定する。
+- schema/format変更: 注文itemへclassifierを追加、Jev採用時はclassifier_confidenceを追加。対象外はexcludedへ。注文全体へ`source_fingerprint`（既存項目、SHA-256、注文番号・商品名・数量のみから算出）を追加。
+- migration: 既存注文JSONのmigrationなし。新cache（`data/category_jev_cache.json`）は欠損・破損時に空cacheとして継続する。CATEGORY_CLASSIFIER=keyword（既定）の間はこのcacheファイル自体が生成されない。
+- backup対象: 既存のbackup計画（VPS管理側 `OPS-BKP-04`、`/opt/apps/coop-api/data` を丸ごと `/var/backups/vps-app-db/coop-api/` へ）が対象ディレクトリ全体を扱っており、`coop_orders.json` / `coop_latest.json` / `category_overrides.json` / （生成された場合の）`category_jev_cache.json` は追加設定なしでこのbackupに含まれる。本noticeで新たなbackup対象・保存先の変更はない。
+- restore手順:
+  1. `/var/backups/vps-app-db/coop-api/` から対象時点のbackupのchecksumと取得日時を確認する。
+  2. 本番ディレクトリを直接上書きせず、隔離先（例: 一時ディレクトリ）へ展開する。
+  3. `coop_orders.json` / `coop_latest.json` は `json.load()` でparse可能なことを確認し、トップレベルkey（`orders`配列、または`ingredients`/`kits`/`ready_to_eat`/`baby_food`/`seasonings`/`excluded`の各配列）の存在と、`total_items`・`excluded_count`が実item数と一致することを確認する。`category_overrides.json`は`original_name`をkeyとする辞書であることを確認する。
+  4. `category_jev_cache.json`は復元必須ではない（regenerable: true）。破損・欠損時は空cacheとして扱われ、次回Jev問い合わせ時に再生成される。
+  5. 復元後、隔離先の内容を正本パスへ反映し、`GET /api/coop/ingredients`（代表read flow）で分類結果が想定どおり返ることを確認する。復元前のデータは別途保持し、復元直後に削除しない。
+  6. 実施日時・使用backupの取得日時・確認結果を記録する。secret値・商品名の内容そのものは記録しない。
 - backward compatibility: 追加fieldは後方互換を意図。既存データ読み込み側の未知field許容をVPS側で確認。
 
 ## Deploy・rollback
 
-- deploy前提: notice受理、VPS管理review、backup/rollback手順確定、必要なproduction承認。
-- deploy手順の変更: 通常時なし。Jevを有効化する場合はenv provisioningが必要。
-- rollback方法: アプリartifactを戻す。cacheは旧版で未使用。注文JSONを旧版へ戻す場合のrestore方法は要確定。
+- deploy前提: notice受理、VPS管理review、backup/rollback手順確定（上記restore手順）、必要なproduction承認。
+- deploy手順の変更: 通常時なし。Jevを有効化する場合はenv provisioning（後述の同時実行対応完了後）が必要。
+- rollback方法: アプリartifactは直前versionへ手動再配置＋service再起動。dataのrollbackは上記restore手順に従い、`/var/backups/vps-app-db/coop-api/`のbackupから復元する。artifact rollbackとdata rollbackは別手順として扱う。
 - rollback不能条件: rollback前に旧バックアップがなく注文JSONが上書きされた場合、元の自動分類値の復元が困難。
+
+## Jev cacheの同時実行と有効化境界（COOPAPI-003-B04）
+
+- 現状（本notice対象の変更後）: `data/category_jev_cache.json`への書き込みはread-modify-write全体を通した排他制御（lock等）を実装しておらず、cron（07:00/20:00 JST固定）と手動`/api/coop/fetch`が理論上同時に走った場合の更新競合は未検証。
+- ただし、`CATEGORY_CLASSIFIER`の既定値は`keyword`であり、本notice時点でproductionへ`TYPESAFE_API_KEY`をprovisioningする計画はない。両条件が揃わない限りJev問い合わせとcache書き込みは一切発生しないため、**本notice・現在のdeployment計画の範囲では同時実行リスクは顕在化しない。**
+- `CATEGORY_CLASSIFIER=jev`への切り替えとTYPESAFE_API_KEYのprovisioningは、本noticeに含めず、**別個のproduction承認事項**として扱う。その承認申請の前提条件として、cache read-modify-writeの直列化（lock実装）とその検証を完了させることを`ops/runtime-contract.yaml`（`jobs[].concurrency_note`）に明記した。
 
 ## Health・テスト
 
@@ -111,37 +124,37 @@ server_impact: approval_required
 - 新しいalert条件: なし。
 - secret/個人情報対策: key、商品名、応答本文をログへ含めない。Jev応答本文もキャッシュしない。
 
-## 提出前セルフチェック
+## 提出前セルフチェック（2026-09-27 再提出）
 
 - production baseline: 確認済み。coop-api deployed source `f26c2119ac5b3677916e5e4afe02242565a6da4f`。
-- source commitとbaseline以降の全release commit/build差分: source commitとrelease commitを記録済み。remote pushはtaskで禁止のため未実施。
-- data transaction、同時実行、途中失敗、再実行: 実装ではcache一時ファイル置換と読書失敗時fallbackを追加。実VPSでの同時worker動作、注文JSON rollbackは未検証。
-- image rollbackとdata rollback: artifact rollbackとJSON backup restoreを分ける必要あり。restore手順はVPS管理review待ち。
-- job/log/retention、runtime/dependency、client連携: schedule/runtime/依存追加/client配信は変更なし。cache retention方針とログ監視はVPS管理側で確認。
-- owner/review/production承認/client配信: app実装とproduction反映の承認を分離。今回deployなし。
-- noticeはdraftのまま。push禁止のためremote未提出で、ready_for_reviewではない。
+- source commitとbaseline以降の全release commit/build差分: コード変更のsource commit（`9cda9fe`）は不変。本noticeとruntime-contract.yamlのdoc更新はこのcommit以降のrelease_commitsへ追加する（下記notice_commit参照）。
+- data transaction、同時実行、途中失敗、再実行: cache一時ファイル置換と読書失敗時fallbackは実装済み。cron/`/fetch`間の排他制御は未実装（コード変更なし）。ただしCATEGORY_CLASSIFIER既定keyword・TYPESAFE_API_KEY未provisioningのため当該cache自体が現状生成されない。詳細は上記「Jev cacheの同時実行と有効化境界」参照。
+- image rollbackとdata rollback: artifact rollbackとJSON backup restoreの手順を上記「Data・migration・backup」「Deploy・rollback」に具体化した。
+- job/log/retention、runtime/dependency、client連携: schedule/runtime/依存追加/client配信は変更なし。`ops/runtime-contract.yaml`をschema v1へ更新し、env_vars・persistent_paths・jobs・dependencies・deployの各項目を反映した。
+- owner/review/production承認/client配信: app実装とproduction反映の承認を分離。今回deployなし。Jev有効化は別個のproduction承認事項として明記した。
+- notice status: 本ドキュメント更新をcommit・push後に`ready_for_review`へ更新する（下記notice_commit参照）。
 
-未確認・該当なしの理由: VPS側同時実行・data restore・cache retentionはproductionに接続できない無人taskのため未確認。remote pushもtaskで禁止。
+未確認・該当なしの理由: 実VPSでの同時実行実機検証、backupからの実restoreドリルは、production接続を伴うため本レビュー対応の範囲外（VPS管理側の別作業）。
 
 ## 未解決事項
 
-- VPS管理側で注文JSONのbackup/rollbackとcache retentionを決定する。
-- Jevをproductionで有効化する場合、TYPESAFE_API_KEYのprovisioningと商品名送信の最終確認を行う。
-- source/release commitは確定済み。VPS管理review前のdraftであり、taskでpushは禁止されている。
+- VPS管理側で、上記restore手順の実機ドリル実施可否と時期を判断する。
+- Jevをproductionで有効化する場合、cache直列化（lock実装・検証）の完了を前提に、TYPESAFE_API_KEYのprovisioningと商品名送信の最終確認を別途行う。
 
 ## 希望時期
 
-VPS管理review後に決定。
+VPS管理review（再審査）後に決定。
 
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: 未実施（無人実行経路。resultへhandoffを記録）
-- VPS管理チャットへ渡すローカル絶対path: 未記載。公開リポジトリへローカル絶対パスを保存しないため、resultから参照する。
+- ユーザーへの案内: 表示済み（[[vps-management-handoff-template]]定型文）。
+- VPS管理チャットへ渡すローカル絶対path: `C:\work\PRG\HomeTools\meal-planner\api\coop-api\ops\server-change-notices\20260927-COOPAPI-003-summary.md`
 
 ## Approval
 
-- app owner: task 20260927-001および20260927-002で実装承認済み
-- VPS management review: 未実施
+- app owner: task 20260927-001, 20260927-002で実装承認済み。本ドキュメント更新（B01〜B04対応）はユーザー依頼により対話的Claude Codeセッションで実施。
+- VPS management review: 初回`blocked`（2026-09-27、B01〜B04）。本更新は再審査依頼として提出。
 - production approval: 未取得
 - related task_id: 20260927-001, 20260927-002
+- notice_commit: 確定後に追記（下記参照）

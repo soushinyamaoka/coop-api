@@ -1,11 +1,119 @@
 schema_version: 1
 app: coop-api
 
+canonical_repo: https://github.com/soushinyamaoka/coop-api.git
+canonical_ref: main
+updated_at: 2026-09-27
+verified_against_runtime: null   # 本ファイルは現時点でVPS実機との照合を行っていない。runtime/network/config系の記述はCLAUDE.md記載のVPS安全化後契約（2026-08-22実施）に基づく宣言であり、data/jobs/dependenciesのJev関連項目は本アプリ側の実装（未deploy）を反映した宣言。実機照合日を推測で埋めない。
+
+runtime:
+  type: systemd
+  unit: coop-api.service
+  working_directory: /opt/apps/coop-api
+  user: coop-api
+  group: coop-api
+  language_runtime: python3.10   # requirements.txt/CLAUDE.mdの推奨版。実機の正確なpatch versionは未照合
+  os_packages: []
+  restart_policy: null   # unit file未照合のため不明。推測で埋めない
+
+network:
+  listeners:
+    - bind: 127.0.0.1
+      port: 8003
+      protocol: http
+  public:
+    - url: https://coop.homehub-tools.dedyn.io
+      upstream: 127.0.0.1:8003
+      tls: null   # 証明書方式は未照合
+  health:
+    internal:
+      path: /
+      expected_status: 200
+      auth_required: false
+    public:
+      path: /
+      expected_status: 200
+
+config:
+  env_file: /opt/apps/coop-api/.env   # root:coop-api 0640。deploy artifactに含めない
+  env_vars:
+    - { name: GMAIL_ADDRESS, required: true, secret: true }
+    - { name: GMAIL_APP_PASSWORD, required: true, secret: true }
+    - { name: COOP_SENDER, required: false, secret: false }
+    - { name: API_HOST, required: false, secret: false }
+    - { name: API_PORT, required: false, secret: false }
+    - { name: API_TOKEN, required: true, secret: true }
+    - { name: CATEGORY_CLASSIFIER, required: false, secret: false }   # 2026-09-27追加。keyword|jev。未設定はkeyword
+    - { name: TYPESAFE_API_KEY, required: false, secret: true }        # 2026-09-27追加。CATEGORY_CLASSIFIER=jev時のみ実質必須。値未設定ならjev指定でもkeywordへfallback
+  secret_provisioning: manual
+  note: >
+    TYPESAFE_API_KEYは現時点でVPSにprovisioningしない。CATEGORY_CLASSIFIERはproductionで既定の
+    keywordのまま運用し、jevへの切り替えとkey provisioningは本ファイル改定とは別のproduction承認
+    事項として扱う（notice 20260927-COOPAPI-003の対象外）。
+
+data:
+  databases: []
+  persistent_paths:
+    - path: /opt/apps/coop-api/data/coop_orders.json
+      backup_required: true
+      regenerable: false
+      note: 蓄積される全注文履歴。2026-09-27にsource_fingerprint項目を追加（既存データの移行不要）。
+    - path: /opt/apps/coop-api/data/coop_latest.json
+      backup_required: true
+      regenerable: false
+      note: 最新1件の派生ファイル（coop_orders.jsonから再生成可能だが、直近の在庫計算がこのfileに依存するため運用上はbackup対象）。
+    - path: /opt/apps/coop-api/data/category_overrides.json
+      backup_required: true
+      regenerable: false
+      note: ユーザーによるカテゴリ手動学習データ。失えばユーザー操作の再入力が必要。
+    - path: /opt/apps/coop-api/data/category_jev_cache.json
+      backup_required: false
+      regenerable: true
+      note: >
+        2026-09-27新規。商品名→Jev判定結果のcacheのみ。欠損・破損時は空cacheとして継続し、
+        次回Jev問い合わせ時に再生成される。CATEGORY_CLASSIFIER=jev未使用の現状は生成されない。
+  migrations: none
+
+jobs:
+  - name: coop-mail-import
+    mechanism: cron
+    definition: /etc/cron.d/coop-api
+    schedule: "0 7,20 * * *"
+    success_signal: >
+      stdout構造化ログの job_end イベント（job=coop-mail-import, status=success|failure,
+      duration_ms）。2026-09-27時点で監視システムへの自動連携（alert等）は未整備、ログ上の確認のみ。
+      同一注文時は import_skipped（reason=unchanged）を伴う success として記録される。
+    concurrency_control: none
+    concurrency_note: >
+      cron（07:00/20:00 JST固定）と手動 `POST /api/coop/fetch` は別プロセス/別リクエストで、
+      両者およびcron同士の同時実行を防ぐ排他制御（lock等）は実装されていない。
+      CATEGORY_CLASSIFIER=keyword（既定）の間は data/category_jev_cache.json への書き込みが
+      発生しないため、この経路の同時実行競合は実質的に発生しない。CATEGORY_CLASSIFIER=jev への
+      切り替えを承認する際は、cache read-modify-writeの直列化（lock実装と検証）を前提条件とし、
+      その実装・検証は本ファイルの現バージョンの範囲外（Jev有効化のproduction承認事項側で扱う）。
+
+dependencies:
+  internal: [recipe-generator, recipe-search]
+  external:
+    - name: gmail
+      required: always
+    - name: typesafe.ai (api.typesafe.ai)
+      required: conditional
+      condition: CATEGORY_CLASSIFIER=jev かつ TYPESAFE_API_KEY設定時のみ。現状production未有効化。
+
+deploy:
+  entry: 手動配置（deploy-files.txt記載の5ファイルをWinSCP等でVPSへ転送し、pip install -r requirements.txt後にsudo systemctl restart coop-api）。専用deploy scriptなし。
+  downtime: brief-restart
+  rollback: 直前artifactの手動再配置＋再起動。data側のrollbackは data.persistent_paths のbackup（OPS-BKP-04）からの復元による。artifact rollbackとdata rollbackは別手順。
+
 logging:
-  destinations: [stderr]
+  destinations: [stdout]
   format: structured
   schema_version: 1
   contains_pii: false
   rotation: null
 
-# その他のruntime contractセクションは未整備（本タスクの範囲外）。
+user_impact:
+  direct_users: false
+  client_apps: [meal-planner]
+  user_facing_functions: ["COOP食材取込", "献立提案", "商品カテゴリ分類"]
