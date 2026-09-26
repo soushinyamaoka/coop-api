@@ -125,6 +125,7 @@ def test_parse_coop_email_extracts_sample_orders() -> None:
         "original_name": "牛バラ肉の牛丼用（たれ付）250g（たれ45g含む）",
         "quantity": 1,
         "category": "食材",
+        "classifier": "keyword",
     }
     assert items["283500"]["name"] == "クンパッポンカリーキット"
     assert items["283500"]["quantity"] == 1

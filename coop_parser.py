@@ -8,6 +8,7 @@ COOPデリ注文確認メールのパーサー
 
 import re
 import json
+from collections.abc import Callable
 from datetime import datetime
 
 
@@ -43,7 +44,7 @@ KIT_KEYWORDS = [
     "キット", "ミールキット", "おかずセット", "惣菜セット",
     "丼の具",
     "マーボー", "麻婆", "エビマヨ", "エビチリ", "回鍋肉",
-    "青椒肉絲", "酢豚", "グラタン", "ドリア", "パスタソース",
+    "青椒肉絲", "酢豚", "グラタン", "パスタソース",
     "炒めるだけ", "煮るだけ", "レンジで", "チンして",
 ]
 
@@ -127,6 +128,10 @@ def classify_item(name: str) -> str:
         if kw in name:
             return "そのまま"
 
+    # 「油」は油揚げの一部にもなるため、油揚げは食材として扱う
+    if "油揚げ" in name:
+        return "食材"
+
     # 調味料・日用品
     for kw in SEASONING_KEYWORDS:
         if kw in name:
@@ -200,7 +205,10 @@ def normalize_ingredient_name(raw_name: str) -> str:
 # メール本文パース
 # ============================================================
 
-def parse_coop_email(body: str) -> dict:
+def parse_coop_email(
+    body: str,
+    classifier: Callable[[str], dict] | None = None,
+) -> dict:
     """
     COOPデリの注文確認メール本文をパースして構造化データを返す
     
@@ -244,7 +252,16 @@ def parse_coop_email(body: str) -> dict:
             continue
 
         # カテゴリ分類
-        category = classify_item(raw_name)
+        decision = classifier(raw_name) if classifier else {"choice": classify_item(raw_name), "source": "keyword"}
+        category = decision.get("choice", classify_item(raw_name))
+
+        if category == "対象外":
+            excluded.append({
+                "order_no": order_no,
+                "name": raw_name.strip(),
+                "reason": "商品ではない（応募・エントリー等）",
+            })
+            continue
 
         # 食材名の正規化
         normalized = normalize_ingredient_name(raw_name)
@@ -255,7 +272,10 @@ def parse_coop_email(body: str) -> dict:
             "original_name": raw_name.strip(),
             "quantity": qty,
             "category": category,
+            "classifier": decision.get("source", "keyword"),
         }
+        if decision.get("source") == "jev":
+            item["classifier_confidence"] = decision.get("confidence")
 
         # カテゴリ別に振り分け
         if category == "食材":
@@ -282,6 +302,13 @@ def parse_coop_email(body: str) -> dict:
         "seasonings": seasonings,
         "excluded": excluded,
     }
+
+
+def extract_product_names(body: str) -> list[str]:
+    """Return raw order names without reading or writing application data."""
+    converted = zen_to_han(body)
+    pattern = r'注文番号：(\d+)\s*\n\s*商品名：(.+?)\s*\n\s*数量：(\d+)点'
+    return [match.group(2).strip() for match in re.finditer(pattern, converted) if int(match.group(3)) > 0]
 
 
 # ============================================================

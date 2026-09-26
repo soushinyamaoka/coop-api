@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from coop_parser import parse_coop_email
+from coop_parser import extract_product_names, parse_coop_email
 
 # ============================================================
 # 設定
@@ -113,6 +113,7 @@ def log_event(log: logging.Logger, level: int, event: str, **fields) -> None:
 
 configure_logging()
 logger = logging.getLogger(__name__)
+_warned_missing_jev_key = False
 
 
 # ============================================================
@@ -318,7 +319,27 @@ def _fetch_coop_emails(days_back: int = 14) -> tuple[list[dict], bool]:
                     continue
 
                 # パース
-                parsed = parse_coop_email(body)
+                classifier = None
+                from jev_classifier import classifier_mode
+                mode, disabled_reason = classifier_mode()
+                if disabled_reason:
+                    global _warned_missing_jev_key
+                    if not _warned_missing_jev_key:
+                        log_event(logger, logging.WARNING, "jev_classifier_disabled", reason=disabled_reason)
+                        _warned_missing_jev_key = True
+                if mode == "jev":
+                    typesafe_key = os.getenv("TYPESAFE_API_KEY", "")
+                    if typesafe_key:
+                        from jev_classifier import classify_products_sync
+                        decisions, jev_stats = classify_products_sync(
+                            extract_product_names(body),
+                            api_key=typesafe_key,
+                            cache_path=DATA_DIR / "category_jev_cache.json",
+                            overrides_path=DATA_DIR / "category_overrides.json",
+                        )
+                        classifier = lambda name: decisions.get(name, {"choice": "食材", "source": "keyword"})
+                        log_event(logger, logging.INFO, "jev_classification_summary", **jev_stats)
+                parsed = parse_coop_email(body, classifier=classifier)
                 parsed["email_subject"] = subject
                 parsed["email_date"] = date_str
                 parsed["email_sender"] = sender
