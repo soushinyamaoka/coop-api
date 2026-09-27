@@ -536,6 +536,10 @@ def run_coop_mail_import(
             if skip_if_unchanged:
                 return []
             raise
+    except ImportBusyError:
+        # busyは別プロセス/スレッドとの正常な競合であり、内部failureではない。
+        # job_failedは出さず、finallyのjob_end(success)のみで記録する。
+        raise
     except Exception as exc:
         log_event(
             logger,

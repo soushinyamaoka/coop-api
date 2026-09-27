@@ -220,6 +220,23 @@ def test_cron_skips_when_lock_is_held(monkeypatch, tmp_path, caplog):
     assert job_ends[0].event_fields["status"] == "success"
 
 
+def test_manual_fetch_busy_does_not_log_job_failed(monkeypatch, tmp_path, caplog):
+    """busyはcron/手動が競合しただけの正常系であり、job_failedと矛盾するjob_end(success)を
+    併記してはならない。"""
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(fetch, "DATA_DIR", data_dir)
+    monkeypatch.setattr(fetch, "_fetch_coop_emails", lambda **_kwargs: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(fetch, "save_results", lambda _results: (_ for _ in ()).throw(AssertionError()))
+    with fetch._coop_import_lock():
+        with pytest.raises(fetch.ImportBusyError):
+            fetch.run_coop_mail_import(save=True, skip_if_unchanged=False)
+    failed = [record for record in caplog.records if getattr(record, "event", None) == "job_failed"]
+    job_ends = [record for record in caplog.records if getattr(record, "event", None) == "job_end"]
+    assert failed == []
+    assert len(job_ends) == 1
+    assert job_ends[0].event_fields["status"] == "success"
+
+
 def test_fetch_endpoint_returns_busy_without_running_import(monkeypatch):
     from pathlib import Path
 
