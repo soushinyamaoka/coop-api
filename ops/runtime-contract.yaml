@@ -4,7 +4,7 @@ app: coop-api
 canonical_repo: https://github.com/soushinyamaoka/coop-api.git
 canonical_ref: main
 updated_at: 2026-09-30
-verified_against_runtime: null   # 本ファイルは現時点でVPS実機との照合を行っていない。runtime/network/config系はCLAUDE.md記載のVPS安全化後契約に基づく宣言。分類overrideの原子的保存・専用lockと両一時directoryは未deployの実装を反映した宣言。実機照合日を推測で埋めない。
+verified_against_runtime: null   # 本ファイル全体の実機照合日は未確定。Jevの004反映・実行確認はVPS管理の2026-09-27実施記録に基づく。分類overrideの原子的保存・専用lockと両一時directoryは005の未deploy実装を反映した宣言。
 
 runtime:
   type: systemd
@@ -47,9 +47,10 @@ config:
     - { name: TYPESAFE_API_KEY, required: false, secret: true }        # 2026-09-27追加。CATEGORY_CLASSIFIER=jev時のみ実質必須。値未設定ならjev指定でもkeywordへfallback
   secret_provisioning: manual
   note: >
-    Jev有効化（CATEGORY_CLASSIFIER=jevへの切替とTYPESAFE_API_KEYのprovisioning）はnotice
-    20260927-COOPAPI-004で申請中。VPS管理レビューと別途production承認が完了するまでは
-    keyword分類を維持し、keyをprovisioningしない。
+    notice 20260927-COOPAPI-004は2026-09-27にproduction反映済み。
+    CATEGORY_CLASSIFIER=jevへの切替とTYPESAFE_API_KEYのprovisioningが行われ、
+    VPS管理の実施記録でJev実行を確認済み。secret値は本契約に記録しない。
+    notice 20260930-COOPAPI-005の分類override原子的保存と専用一時directoryは未反映。
 
 data:
   databases: []
@@ -89,7 +90,8 @@ data:
       regenerable: true
       note: >
         2026-09-27新規。商品名→Jev判定結果のcacheのみ。欠損・破損時は空cacheとして継続し、
-        次回Jev問い合わせ時に再生成される。CATEGORY_CLASSIFIER=jev未使用の現状は生成されない。
+        次回Jev問い合わせ時に再生成される。Jevは004でproduction有効化済みで、
+        VPS管理レビューは既存cacheを確認済み。005の専用一時directoryは未反映。
     - path: /opt/apps/coop-api/data/.coop_import.lock
       backup_required: false
       regenerable: true
@@ -121,7 +123,7 @@ dependencies:
       required: always
     - name: typesafe.ai (api.typesafe.ai)
       required: conditional
-      condition: CATEGORY_CLASSIFIER=jev かつ TYPESAFE_API_KEY設定時のみ。現状production未有効化。
+      condition: CATEGORY_CLASSIFIER=jev かつ TYPESAFE_API_KEY設定時のみ。004でproduction有効化・Jev実行確認済み。005の一時保存変更は未反映。
 
 deploy:
   entry: >
