@@ -104,10 +104,9 @@ server_impact: approval_required
 
 ## 未解決事項
 
-- VPS管理はbackup対応候補を稼働パス外に準備し、合成データで除外・隔離復元を確認済み。稼働backup scriptへの反映と実archiveの確認は別承認・未実施。
-- 分類overrideを含む稼働backupの確認と隔離復元確認が未了。
-- backup実行userからのmode/group読取はVPS上で未確認。
-- 初回レビューでsource `cce6a9c` と通知最終commit `5bdb6aa` の実remote一致をVPS管理側が確認済み。B01対応後のsource `c1c0505` と再提出通知最終commitはpush後に実remoteと照合する。
+- VPS管理はbackup修正版候補を準備し、合成データで除外・隔離復元を確認済み。日次backupの復旧と稼働確認は未完了で、production反映前に必要。
+- 新規分類JSON・lock生成後の権限とbackup実行userからの読取、分類overrideを含む実backup・隔離復元は未確認。これらもproduction反映前に必要。
+- B01対応source `c1c0505` と通知最終commit `c59b82d` はpush済み。VPS管理側はsource・実remote・baselineを確認し、B01解消を認めて技術受理した（2026-09-30）。
 - meal-planner-app端末配信は保留。
 
 ## 希望時期
@@ -117,12 +116,12 @@ VPS管理レビュー後に別途調整。
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: 初回提出済み。B01訂正後に再提出する
+- ユーザーへの案内: 初回提出およびB01訂正の再提出済み。VPS管理で技術受理
 - VPS管理チャットへ渡すローカル絶対path: C:\work\PRG\HomeTools\meal-planner\api\coop-api\ops\server-change-notices\20260930-COOPAPI-005-summary.md
 
 ## Approval
 
-- app owner: 実装提出済み。B01の文書訂正を再提出
-- VPS management review: 初回blocked（COOP-005-B01）。訂正後の増分レビュー待ち
+- app owner: 実装提出・B01訂正済み
+- VPS management review: 技術受理（2026-09-30）。production反映は別承認で、日次backup復旧・生成後権限・実backup/隔離復元の確認待ち
 - production approval: 未実施
 - related task_id: 20260930-009
