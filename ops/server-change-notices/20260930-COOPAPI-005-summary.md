@@ -6,9 +6,9 @@ policy_bundle_version: 2026-09-04.1
 notice_id: 20260930-COOPAPI-005
 app: coop-api
 source_branch: main
-source_commit: cce6a9c6b03e917d8c2a39392f5a48c72f95a3a3
+source_commit: c1c0505d88f904529a2e1dafe1066aad6c360430
 production_baseline_commit: f4259490f78f5b358a6eec938e86281148866394
-release_commits: be9f60a131558be92d1b889bde04328cf47e656a, cce6a9c6b03e917d8c2a39392f5a48c72f95a3a3
+release_commits: be9f60a131558be92d1b889bde04328cf47e656a, cce6a9c6b03e917d8c2a39392f5a48c72f95a3a3, fecc422e95bd45e8507cdbaf269e087be525537b, 5bdb6aa7c868c2e371d017635a35ea2e0f20f02e, c1c0505d88f904529a2e1dafe1066aad6c360430
 impact_level: L3
 status: ready_for_review
 created_by: Codex
@@ -96,18 +96,18 @@ server_impact: approval_required
 
 ## 提出前セルフチェック
 
-- 初回提出前セルフチェック（2026-09-30 JST、1回）: 配布済みAIポリシー `2026-09-05.1` と正本SHA-256は一致し、full notice template `2026-09-04.1` を使用。VPS管理の進行中作業ツリー、ユーザー訂正、分類PUT引き継ぎは稼働baseline `f425949` を示す。一方、アプリ共通指示が指す保存先のbaselineファイルは旧値 `f26c211` のままであり、VPS管理側で正本を同期する必要がある。
-- baselineからsourceまでの全commitは上記2件。`be9f60a` は旧notice 004の文書更新のみ、`cce6a9c` は今回のコード2件・runtime contract・合成試験。配布一覧は `coop_parser.py`、`jev_classifier.py`、`fetch_coop_mail.py`、`coop_api_server.py`、`requirements.txt`。`.env`、`data/`、一時file、notice、runtime contract、testは配布対象外。依存version・共通deploy経路・bind・service・cron・認証に変更なし。
-- VPS管理read-only preflight（notice commit `fecc422`、実remote照合付き）は `ready_with_manual_checks`、blocker 0、機微値候補 0、source `cce6a9c`、実remote `fecc422`、tracked clean。manual checkの未追跡1件は既存の `AGENTS.md` であり配布一覧にない。本結果の追記だけを次のnotice commitとし、push後の実remoteを再照合する。
+- 初回提出前セルフチェック（2026-09-30 JST、1回）: 配布済みAIポリシー `2026-09-05.1` と正本SHA-256は一致し、full notice template `2026-09-04.1` を使用。初回時点で参照可能なbaselineコピーに差があったが、VPS管理初回レビューで稼働正本 `f425949` を確認し、旧値 `f26c211` のコピーは現行正本として採用しないと確定した。
+- 初回sourceまでのcommitは `be9f60a`（旧notice 004の文書）、`cce6a9c`（今回のコード2件・runtime contract・合成試験）。その後の `fecc422` と `5bdb6aa` は通知005だけのcommit。今回のB01対応 `c1c0505` はruntime contractだけを変更し、再提出sourceまでの全5commitを上記に列挙した。配布一覧は `coop_parser.py`、`jev_classifier.py`、`fetch_coop_mail.py`、`coop_api_server.py`、`requirements.txt`。`.env`、`data/`、一時file、notice、runtime contract、testは配布対象外。依存version・共通deploy経路・bind・service・cron・認証に変更なし。
+- 初回提出前のVPS管理read-only preflight（notice commit `fecc422`、実remote照合付き）は `ready_with_manual_checks`、blocker 0、機微値候補 0、source `cce6a9c`、実remote `fecc422`、tracked clean。manual checkの未追跡1件は既存の `AGENTS.md` であり配布一覧にない。この結果は通知更新commit `5bdb6aa` に記録し、同commitの実remote一致も初回レビューで確認済み。
 - 空欄商品名は既存どおり空文字keyとして保存され得る。JSON形式は不変で旧clientは競合時503を非2xxとして扱う。並行PUT、失敗後の旧file保持・cleanup、例外後のlock解放は合成データで確認。失敗後の明示的な再試行試験、POSIX権限とbackup実行userの読取、分類overrideを含む稼働backup・隔離復元は未確認。data rollbackは確認済backupの隔離復元後にのみ検討し、artifact rollbackと分離する。
+- B01再提出時の増分確認: `5bdb6aa..c1c0505` はruntime contractのJev状態に関する文書4か所のみ。004でJevがproduction有効化・実行確認済みである事実と、005の保存方式は未反映である事実を分けた。コード・配布一覧・依存・認証・データ形式は不変。文書差分のためアプリ試験は再実行しない。通知最終commitのpushと実remote一致を確認して再提出する。
 
 ## 未解決事項
 
-- VPS管理backup scriptの事前読取検査とtar双方に `.category_overrides_tmp/` と `.jev_cache_tmp/` を厳密除外し、稼働確認すること。
-- VPS管理の進行中作業ツリーと、アプリ共通指示が指す保存先のproduction baseline記録が異なる。稼働commit `f425949` の正本記録をVPS管理側で確定・同期すること。
+- VPS管理はbackup対応候補を稼働パス外に準備し、合成データで除外・隔離復元を確認済み。稼働backup scriptへの反映と実archiveの確認は別承認・未実施。
 - 分類overrideを含む稼働backupの確認と隔離復元確認が未了。
 - backup実行userからのmode/group読取はVPS上で未確認。
-- テスト結果とsource/release commitsは上記のとおり。sourceと初回notice commit `fecc422` のpush・実remote一致はpreflightで確認済み。本セルフチェック記録のnotice commitはpush後に別途照合する。
+- 初回レビューでsource `cce6a9c` と通知最終commit `5bdb6aa` の実remote一致をVPS管理側が確認済み。B01対応後のsource `c1c0505` と再提出通知最終commitはpush後に実remoteと照合する。
 - meal-planner-app端末配信は保留。
 
 ## 希望時期
@@ -117,12 +117,12 @@ VPS管理レビュー後に別途調整。
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: 未実施
+- ユーザーへの案内: 初回提出済み。B01訂正後に再提出する
 - VPS管理チャットへ渡すローカル絶対path: C:\work\PRG\HomeTools\meal-planner\api\coop-api\ops\server-change-notices\20260930-COOPAPI-005-summary.md
 
 ## Approval
 
-- app owner: 実装提出待ち
-- VPS management review: 未実施
+- app owner: 実装提出済み。B01の文書訂正を再提出
+- VPS management review: 初回blocked（COOP-005-B01）。訂正後の増分レビュー待ち
 - production approval: 未実施
 - related task_id: 20260930-009
