@@ -17,7 +17,11 @@ import os
 import re
 import json
 import logging
-from contextlib import asynccontextmanager
+import tempfile
+import threading
+import time
+import errno
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from datetime import datetime
 
@@ -54,6 +58,66 @@ DATA_DIR.mkdir(exist_ok=True)
 
 # カテゴリ学習データ保存先
 CATEGORY_OVERRIDES_FILE = DATA_DIR / "category_overrides.json"
+CATEGORY_OVERRIDES_LOCK = DATA_DIR / ".category_overrides.lock"
+CATEGORY_OVERRIDES_TMP_DIR = DATA_DIR / ".category_overrides_tmp"
+_CATEGORY_THREAD_LOCK = threading.Lock()
+
+
+def _data_directory_gid() -> int:
+    """Use the data directory's configured group instead of assuming a group name."""
+    return os.stat(DATA_DIR).st_gid
+
+
+@contextmanager
+def _category_overrides_lock(timeout: float = 2.0):
+    deadline = time.monotonic() + timeout
+    if not _CATEGORY_THREAD_LOCK.acquire(timeout=timeout):
+        raise TimeoutError
+    handle = None
+    locked = False
+    try:
+        handle = open(CATEGORY_OVERRIDES_LOCK, "a+b")
+        if os.name == "posix":
+            os.chmod(CATEGORY_OVERRIDES_LOCK, 0o640)
+            os.chown(CATEGORY_OVERRIDES_LOCK, -1, _data_directory_gid())
+            if os.stat(CATEGORY_OVERRIDES_LOCK).st_gid != _data_directory_gid():
+                raise OSError("category override lock group mismatch")
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    if not handle.read(1):
+                        handle.seek(0); handle.write(b"0"); handle.flush()
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                time.sleep(min(0.02, remaining))
+        yield
+    finally:
+        if handle is not None:
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+        _CATEGORY_THREAD_LOCK.release()
 
 # ユーザー登録メニュー保存先
 CUSTOM_MEALS_FILE = DATA_DIR / "custom_meals.json"
@@ -116,8 +180,40 @@ def load_category_overrides() -> dict:
 
 def save_category_overrides(overrides: dict) -> None:
     """カテゴリ修正データを保存する"""
-    with open(CATEGORY_OVERRIDES_FILE, "w", encoding="utf-8") as f:
-        json.dump(overrides, f, ensure_ascii=False, indent=2)
+    temp_name = None
+    try:
+        CATEGORY_OVERRIDES_TMP_DIR.mkdir(mode=0o750, parents=True, exist_ok=True)
+        if os.stat(CATEGORY_OVERRIDES_TMP_DIR).st_dev != os.stat(DATA_DIR).st_dev:
+            raise OSError("category override temporary directory is on another filesystem")
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=CATEGORY_OVERRIDES_TMP_DIR,
+                prefix=".category_overrides.", suffix=".tmp", delete=False) as f:
+            temp_name = f.name
+            if os.name == "posix":
+                os.fchmod(f.fileno(), 0o640)
+                os.fchown(f.fileno(), -1, _data_directory_gid())
+                info = os.fstat(f.fileno())
+                if info.st_mode & 0o777 != 0o640 or info.st_gid != _data_directory_gid():
+                    raise OSError("category override temporary file permissions mismatch")
+            json.dump(overrides, f, ensure_ascii=False, indent=2)
+            f.flush(); os.fsync(f.fileno())
+        if os.name == "posix":
+            os.chmod(temp_name, 0o640)
+            if os.stat(temp_name).st_gid != _data_directory_gid():
+                raise OSError("category override group mismatch")
+        os.replace(temp_name, CATEGORY_OVERRIDES_FILE)
+        temp_name = None
+        if os.name == "posix":
+            try:
+                fd = os.open(DATA_DIR, os.O_RDONLY)
+                try: os.fsync(fd)
+                finally: os.close(fd)
+            except OSError:
+                logger.warning("Category override directory sync failed")
+    except BaseException:
+        if temp_name:
+            try: os.unlink(temp_name)
+            except OSError: pass
+        raise
 
 
 def apply_category_overrides(items: list[dict]) -> list[dict]:
@@ -1109,9 +1205,16 @@ def update_classification(
             detail=f"無効なカテゴリです。有効な値: {valid_categories}",
         )
 
-    overrides = load_category_overrides()
-    overrides[request.original_name] = request.category
-    save_category_overrides(overrides)
+    try:
+        with _category_overrides_lock():
+            overrides = load_category_overrides()
+            overrides[request.original_name] = request.category
+            save_category_overrides(overrides)
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="カテゴリ学習データが更新中です。時間をおいて再試行してください")
+    except OSError:
+        logger.error("Category override save failed")
+        raise HTTPException(status_code=500, detail="カテゴリ学習データを保存できませんでした")
 
     return {
         "status": "success",

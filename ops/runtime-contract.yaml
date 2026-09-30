@@ -3,8 +3,8 @@ app: coop-api
 
 canonical_repo: https://github.com/soushinyamaoka/coop-api.git
 canonical_ref: main
-updated_at: 2026-09-27
-verified_against_runtime: null   # 本ファイルは現時点でVPS実機との照合を行っていない。runtime/network/config系の記述はCLAUDE.md記載のVPS安全化後契約（2026-08-22実施）に基づく宣言であり、data/jobs/dependenciesのJev関連項目は本アプリ側の実装（未deploy）を反映した宣言。実機照合日を推測で埋めない。
+updated_at: 2026-09-30
+verified_against_runtime: null   # 本ファイルは現時点でVPS実機との照合を行っていない。runtime/network/config系はCLAUDE.md記載のVPS安全化後契約に基づく宣言。分類overrideの原子的保存・専用lockと両一時directoryは未deployの実装を反映した宣言。実機照合日を推測で埋めない。
 
 runtime:
   type: systemd
@@ -65,7 +65,21 @@ data:
     - path: /opt/apps/coop-api/data/category_overrides.json
       backup_required: true
       regenerable: false
-      note: ユーザーによるカテゴリ手動学習データ。失えばユーザー操作の再入力が必要。
+      mode: "0640"
+      note: ユーザーによるカテゴリ手動学習データ。失えばユーザー操作の再入力が必要。原子的保存と専用lockを使用。一時fileを含む厳密なbackup除外前提を満たすまでproduction反映不可。
+    - path: /opt/apps/coop-api/data/.category_overrides.lock
+      backup_required: false
+      regenerable: true
+      mode: "0640"
+      note: 分類PUT専用のプロセス間lock file。data directoryのgroupを適用し、削除せず再利用する。
+    - path: /opt/apps/coop-api/data/.category_overrides_tmp/
+      backup_required: false
+      regenerable: true
+      note: 分類JSON原子的置換用一時directory。同一filesystem上。backup事前読取検査とtar双方でこの正確なpathだけを除外する必要があり、backup scriptの変更・稼働確認までproduction反映不可。
+    - path: /opt/apps/coop-api/data/.jev_cache_tmp/
+      backup_required: false
+      regenerable: true
+      note: Jev cache原子的置換用一時directory。同一filesystem上。backup事前読取検査とtarの両方でこの正確なpathだけを除外する必要があり、backup scriptの変更・稼働確認までproduction反映不可。
     - path: /opt/apps/coop-api/data/custom_meals.json
       backup_required: true
       regenerable: false

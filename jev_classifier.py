@@ -59,20 +59,27 @@ def _load_cache(path: Path) -> dict:
 def _save_cache(path: Path, cache: dict) -> None:
     temp_name = None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temp:
+        temp_dir = path.parent / ".jev_cache_tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        if os.stat(temp_dir).st_dev != os.stat(path.parent).st_dev:
+            raise OSError("Jev cache temporary directory is on another filesystem")
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=temp_dir,
+                                         prefix="cache-", suffix=".tmp", delete=False) as temp:
             temp_name = temp.name
             json.dump(cache, temp, ensure_ascii=False, indent=2)
             temp.flush()
             os.fsync(temp.fileno())
         os.replace(temp_name, path)
-    except OSError:
-        LOGGER.warning("Jev classification cache could not be written")
+        temp_name = None
+    except BaseException as exc:
         if temp_name:
             try:
                 os.unlink(temp_name)
             except OSError:
                 pass
+        if not isinstance(exc, Exception):
+            raise
+        LOGGER.warning("Jev classification cache could not be written")
 
 
 def _valid_cached(value: dict) -> bool:

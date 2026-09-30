@@ -166,3 +166,51 @@ def test_parse_adds_classifier_fields_and_excludes_non_products():
 ])
 def test_requested_keyword_corrections(name, expected):
     assert classify_item(name) == expected
+
+
+def test_cache_temporary_file_uses_dedicated_directory_and_cleans_up(tmp_path, monkeypatch):
+    cache_file = tmp_path / "data" / "category_jev_cache.json"
+    cache_file.parent.mkdir()
+    original_replace = jev_classifier.os.replace
+    observed = {}
+
+    def inspect_replace(source, target):
+        observed["source"] = Path(source)
+        observed["target"] = Path(target)
+        original_replace(source, target)
+
+    monkeypatch.setattr(jev_classifier.os, "replace", inspect_replace)
+    jev_classifier._save_cache(cache_file, {"合成商品": {"choice": "食材"}})
+    assert observed["source"].parent == cache_file.parent / ".jev_cache_tmp"
+    assert observed["target"] == cache_file
+    assert json.loads(cache_file.read_text(encoding="utf-8")) == {"合成商品": {"choice": "食材"}}
+    assert list((cache_file.parent / ".jev_cache_tmp").iterdir()) == []
+
+
+def test_cache_replace_failure_cleans_temporary_file(tmp_path, monkeypatch):
+    cache_file = tmp_path / "data" / "category_jev_cache.json"
+    cache_file.parent.mkdir()
+    cache_file.write_text('{"old":{}}', encoding="utf-8")
+
+    def fail_replace(*args):
+        raise OSError("synthetic replace failure")
+
+    monkeypatch.setattr(jev_classifier.os, "replace", fail_replace)
+    jev_classifier._save_cache(cache_file, {"new": {}})
+    assert json.loads(cache_file.read_text(encoding="utf-8")) == {"old": {}}
+    assert list((cache_file.parent / ".jev_cache_tmp").iterdir()) == []
+
+
+def test_cache_save_cleans_up_and_propagates_keyboard_interrupt(tmp_path, monkeypatch):
+    cache_file = tmp_path / "data" / "category_jev_cache.json"
+    cache_file.parent.mkdir()
+    cache_file.write_text('{"old":{}}', encoding="utf-8")
+
+    def interrupt_dump(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(jev_classifier.json, "dump", interrupt_dump)
+    with pytest.raises(KeyboardInterrupt):
+        jev_classifier._save_cache(cache_file, {"new": {}})
+    assert json.loads(cache_file.read_text(encoding="utf-8")) == {"old": {}}
+    assert list((cache_file.parent / ".jev_cache_tmp").iterdir()) == []
