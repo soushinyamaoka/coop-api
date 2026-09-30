@@ -96,9 +96,10 @@ server_impact: approval_required
 
 ## 提出前セルフチェック
 
-提出準備の確認: VPS管理の配布済みAIポリシー `2026-09-05.1` は正本SHA-256と一致し、server change noticeは現行full template `2026-09-04.1` を使用。VPS管理の進行中作業ツリーにあるproduction baselineは `f4259490f78f5b358a6eec938e86281148866394` で、ユーザー訂正と分類PUT引き継ぎ文書も同commitを示す。一方、アプリ共通指示が指す保存先のproduction baselineファイルは `f26c211` のままであり、正本間の差異をVPS管理側で解消する必要がある。baselineからsourceまでの全commitは上記2件で、`be9f60a` は旧notice 004の文書更新のみ、`cce6a9c` は今回のコード2件・runtime contract・合成試験の変更。配布一覧は `coop_parser.py`、`jev_classifier.py`、`fetch_coop_mail.py`、`coop_api_server.py`、`requirements.txt` で、今回の変更コード2件を含む。`.env`、`data/`、一時file、notice、runtime contract、testは配布一覧にない。依存versionと共通deploy経路は変更なし。code commit前に実remote `main` は `be9f60a` でlocal HEADと一致した。
-
-未確認・該当なしの理由: source codeはcommit済み。noticeのcommitと両commitのpush、push後の実remote一致、VPS管理read-only preflightは提出直前に確認する。VPS稼働確認・分類overrideを含む実backup確認・隔離復元確認はVPS管理側で未完了。空欄商品名は現行APIと同じく空文字keyとして保存され得るが、今回の保存方式で新たな特別扱いはしない。JSON形式は不変で旧clientは競合時503を非2xxとして扱う。並行PUT、失敗後の旧file保持・cleanup、例外後のlock解放は合成データで確認した。失敗後の明示的な再試行試験は未実施。data rollbackは確認済backupの隔離復元後にのみ検討し、artifact rollbackと分離する。
+- 初回提出前セルフチェック（2026-09-30 JST、1回）: 配布済みAIポリシー `2026-09-05.1` と正本SHA-256は一致し、full notice template `2026-09-04.1` を使用。VPS管理の進行中作業ツリー、ユーザー訂正、分類PUT引き継ぎは稼働baseline `f425949` を示す。一方、アプリ共通指示が指す保存先のbaselineファイルは旧値 `f26c211` のままであり、VPS管理側で正本を同期する必要がある。
+- baselineからsourceまでの全commitは上記2件。`be9f60a` は旧notice 004の文書更新のみ、`cce6a9c` は今回のコード2件・runtime contract・合成試験。配布一覧は `coop_parser.py`、`jev_classifier.py`、`fetch_coop_mail.py`、`coop_api_server.py`、`requirements.txt`。`.env`、`data/`、一時file、notice、runtime contract、testは配布対象外。依存version・共通deploy経路・bind・service・cron・認証に変更なし。
+- VPS管理read-only preflight（notice commit `fecc422`、実remote照合付き）は `ready_with_manual_checks`、blocker 0、機微値候補 0、source `cce6a9c`、実remote `fecc422`、tracked clean。manual checkの未追跡1件は既存の `AGENTS.md` であり配布一覧にない。本結果の追記だけを次のnotice commitとし、push後の実remoteを再照合する。
+- 空欄商品名は既存どおり空文字keyとして保存され得る。JSON形式は不変で旧clientは競合時503を非2xxとして扱う。並行PUT、失敗後の旧file保持・cleanup、例外後のlock解放は合成データで確認。失敗後の明示的な再試行試験、POSIX権限とbackup実行userの読取、分類overrideを含む稼働backup・隔離復元は未確認。data rollbackは確認済backupの隔離復元後にのみ検討し、artifact rollbackと分離する。
 
 ## 未解決事項
 
@@ -106,7 +107,7 @@ server_impact: approval_required
 - VPS管理の進行中作業ツリーと、アプリ共通指示が指す保存先のproduction baseline記録が異なる。稼働commit `f425949` の正本記録をVPS管理側で確定・同期すること。
 - 分類overrideを含む稼働backupの確認と隔離復元確認が未了。
 - backup実行userからのmode/group読取はVPS上で未確認。
-- テスト結果とsource/release commitsは上記のとおり。実remoteは変更前の `be9f60a` まで照合済みで、今回のpush後の一致は未確認。
+- テスト結果とsource/release commitsは上記のとおり。sourceと初回notice commit `fecc422` のpush・実remote一致はpreflightで確認済み。本セルフチェック記録のnotice commitはpush後に別途照合する。
 - meal-planner-app端末配信は保留。
 
 ## 希望時期
