@@ -27,7 +27,7 @@ deployment_status: not_started
 ## server_impact判定
 
 server_impact: approval_required
-判定理由: 永続分類dataの書込・mode/group・backup契約、APIの503応答契約を変更するL3。backup scriptの事前読取検査とtar双方で一時directoryを正確に除外し、稼働確認するまでproduction反映できない。
+判定理由: 永続分類dataの書込・mode/group・backup契約、APIの503応答契約を変更するL3。VPS管理側は一時directoryの除外と日次backup/manifest復旧を確認済み。API反映後のservice userでの生成権限と実分類JSONのbackup/隔離restore確認が必要。
 
 ## 現在と変更後
 
@@ -50,7 +50,7 @@ server_impact: approval_required
 ## production変更
 
 - 必要性: あり
-- 想定作業: VPS管理側でbackup scriptの `.category_overrides_tmp/` と `.jev_cache_tmp/` の専用path除外を事前読取検査とtarへ追加し稼働確認。その後に別途承認されたartifact反映と権限・API確認
+- 想定作業: VPS管理側で適用済みbackup修正版を維持。別途承認後にartifactを反映し、service user生成後の権限、分類JSONの次回archive収録・隔離restore、APIを確認
 - downtime: brief-restart想定（実作業計画で確認）
 - maintenance window: VPS管理側で決定
 
@@ -71,12 +71,12 @@ server_impact: approval_required
 - schema/format変更: なし
 - migration: なし
 - backup対象: category_overrides.jsonは必須。category lock、`.category_overrides_tmp/`、`.jev_cache_tmp/`、再生成可能な `category_jev_cache.json` は不要
-- restore確認: VPS管理側のbackup修正版で分類JSONを含む実backupの復元確認が未了
+- restore確認: backup修正版の手動・自然実行、manifest strict、既存COOP archiveの隔離restoreはVPS管理側で成功。productionに分類overrideがまだ存在しないため、分類JSONを含む次回archive・隔離restoreは初回実分類書込後に確認する
 - backward compatibility: JSON形式とendpointは維持。PUT競合時は503
 
 ## Deploy・rollback
 
-- deploy前提: backup scriptの`.category_overrides_tmp/`と`.jev_cache_tmp/`厳密除外を事前読取検査とtar双方に実装し、VPS管理側で稼働確認。さらに分類overrideを含む実backupの確認と隔離復元確認
+- deploy前提: backup修正版の厳密除外と自然実行・manifest strictは確認済み。artifact反映後、service userで生成した分類JSON/lockのowner/group/modeとdeploy readを確認し、分類JSONが次回archiveへ収録されて隔離restoreできることを確認
 - deploy手順の変更: なし
 - rollback方法: 旧artifactを再配置しservice再起動。data rollbackは確認済backupから別途実施
 - rollback不能条件: 実data/backupを確認せずにdata rollbackしない
@@ -86,7 +86,7 @@ server_impact: approval_required
 - health contract変更: なし
 - 実施テスト: 指定Pythonで合成データ限定 `pytest tests`（82 passed、POSIX所有検証2 skipped）、`coop_parser.py`（UTF-8標準出力でexit 0）、`git diff --check`（pass）
 - 結果: ローカル検証成功。Windows実行環境のためPOSIX file mode/group確認は未実施。別プロセスの並行PUTと非OSError保存失敗時のcleanupも合成データで確認
-- 未実施テストと理由: backup実行userからの実読取、VPS上の除外と稼働・復旧・隔離復元はproduction接続禁止のためVPS管理側確認
+- 未実施テストと理由: service userでの生成後owner確認と実分類JSONを含むarchive・隔離restoreは、production API反映前で分類override未作成のため未実施。VPS管理側のbackup script除外、自然backup、manifest strict、既存archive隔離restoreは確認済み
 
 ## Log・監視
 
@@ -104,9 +104,9 @@ server_impact: approval_required
 
 ## 未解決事項
 
-- VPS管理はbackup修正版候補を準備し、合成データで除外・隔離復元を確認済み。日次backupの復旧と稼働確認は未完了で、production反映前に必要。
-- 新規分類JSON・lock生成後の権限とbackup実行userからの読取、分類overrideを含む実backup・隔離復元は未確認。これらもproduction反映前に必要。
-- B01対応source `c1c0505` と通知最終commit `c59b82d` はpush済み。VPS管理側はsource・実remote・baselineを確認し、B01解消を認めて技術受理した（2026-09-30）。
+- VPS管理はbackup修正版を稼働させ、2026-10-01 03:10 JSTの自然実行、COOP job success、manifest strict（60 files・13,464,751 bytes）を確認済み。既存archiveの隔離restoreも成功。
+- 2026-10-01時点でproductionに分類overrideはない。API反映後、service userが生成したJSON/lockのowner/group/modeとdeployからの読取を確認し、実分類JSONが次回archiveに含まれることと隔離restoreを確認する。
+- B01対応source `c1c0505` はpush済み。VPS管理側はsource・実remote・baselineを確認し、B01解消を認めて技術受理した（2026-09-30）。sourceは今回も変更していない。
 - meal-planner-app端末配信は保留。
 
 ## 希望時期
@@ -122,6 +122,6 @@ VPS管理レビュー後に別途調整。
 ## Approval
 
 - app owner: 実装提出・B01訂正済み
-- VPS management review: 技術受理（2026-09-30）。production反映は別承認で、日次backup復旧・生成後権限・実backup/隔離復元の確認待ち
+- VPS management review: 技術受理（2026-09-30）。production反映は別承認。日次backup/manifestは確認済み、生成後権限と分類JSONを含む次回archive/隔離restoreは未確認
 - production approval: 未実施
 - related task_id: 20260930-009
