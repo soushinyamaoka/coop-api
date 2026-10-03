@@ -233,16 +233,18 @@ def get_email_body(msg: Message) -> str:
 # ============================================================
 
 def _fetch_coop_emails(
-    days_back: int = 14, skip_if_unchanged: bool = False
+    days_back: int = 14, skip_if_unchanged: bool = False, collect_all: bool = False
 ) -> tuple[list[dict], bool]:
     """
     GmailからCOOPデリのメールを取得してパースする
 
     Args:
         days_back: 何日前までのメールを取得するか（デフォルト14日）
+        collect_all: True なら期間内の注文確認メールを全件パースする（過去分取り込み用）。
+            外部APIの呼び出し量を抑えるため、分類はキーワード判定のみを使う。
 
     Returns:
-        パース済みの注文データリストと、取得処理が正常終了したか
+        パース済みの注文データリスト（古い順）と、取得処理が正常終了したか
     """
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         log_event(
@@ -309,16 +311,18 @@ def _fetch_coop_emails(
             return [], True
 
         mail_ids = messages[0].split()
+        # 通常は新しい順に最大5通を確認（最新が広告メール等だった場合に次を試す）。
+        # 過去分取り込みでは期間内の全件を確認する。
+        candidates = list(reversed(mail_ids)) if collect_all else list(reversed(mail_ids[-5:]))
         log_event(
             logger,
             logging.INFO,
             "email_search_completed",
             match_count=len(mail_ids),
-            candidate_count=min(len(mail_ids), 5),
+            candidate_count=len(candidates),
         )
 
-        # 新しい順に最大5通を確認（最新が広告メール等だった場合に次を試す）
-        for candidate_number, mail_id in enumerate(reversed(mail_ids[-5:]), start=1):
+        for candidate_number, mail_id in enumerate(candidates, start=1):
             try:
                 status, msg_data = mail.fetch(mail_id, "(RFC822)")
                 if status != "OK":
@@ -394,7 +398,7 @@ def _fetch_coop_emails(
                 # パース
                 classifier = None
                 from jev_classifier import classifier_mode
-                mode, disabled_reason = classifier_mode()
+                mode, disabled_reason = ("keyword", None) if collect_all else classifier_mode()
                 if disabled_reason:
                     global _warned_missing_jev_key
                     if not _warned_missing_jev_key:
@@ -439,7 +443,8 @@ def _fetch_coop_emails(
                     kit_count=len(parsed["kits"]),
                     excluded_count=parsed["excluded_count"],
                 )
-                break  # 注文確認メールが見つかったので終了
+                if not collect_all:
+                    break  # 注文確認メールが見つかったので終了
 
             except Exception as exc:
                 had_message_failure = True
@@ -455,6 +460,7 @@ def _fetch_coop_emails(
                 )
                 continue
 
+        results.reverse()  # 新しい順に処理したので古い順へ戻す（末尾が最新）
         return results, bool(results) or not had_message_failure
 
     except imaplib.IMAP4.error as exc:
@@ -504,9 +510,14 @@ def _fetch_coop_emails(
 
 
 def run_coop_mail_import(
-    days_back: int = 14, save: bool = False, skip_if_unchanged: bool = False
+    days_back: int = 14, save: bool = False, skip_if_unchanged: bool = False,
+    backfill: bool = False,
 ) -> list[dict]:
-    """1回のメール取得をjob_start/job_endで囲み、必要なら結果を保存する。"""
+    """1回のメール取得をjob_start/job_endで囲み、必要なら結果を保存する。
+
+    backfill=True は期間内の注文メールを全件取り込み、注文履歴にだけ追記する
+    （最新注文ファイル coop_latest.json は更新しない）。
+    """
     run_id = uuid.uuid4().hex
     started_at = time.monotonic()
     succeeded = False
@@ -514,7 +525,7 @@ def run_coop_mail_import(
         logger,
         logging.INFO,
         "job_start",
-        job="coop-mail-import",
+        job="coop-mail-backfill" if backfill else "coop-mail-import",
         run_id=run_id,
     )
 
@@ -523,10 +534,15 @@ def run_coop_mail_import(
             with _coop_import_lock():
                 log_event(logger, logging.INFO, "import_lock", result="acquired")
                 results, fetch_succeeded = _fetch_coop_emails(
-                    days_back=days_back, skip_if_unchanged=skip_if_unchanged
+                    days_back=days_back,
+                    skip_if_unchanged=skip_if_unchanged and not backfill,
+                    collect_all=backfill,
                 )
                 if save and results:
-                    save_results(results)
+                    if backfill:
+                        save_results(results, update_latest=False)
+                    else:
+                        save_results(results)
                 succeeded = fetch_succeeded
                 return results
         except ImportBusyError:
@@ -545,7 +561,7 @@ def run_coop_mail_import(
             logger,
             logging.ERROR,
             "job_failed",
-            job="coop-mail-import",
+            job="coop-mail-backfill" if backfill else "coop-mail-import",
             run_id=run_id,
             error_kind="internal",
             error_class=type(exc).__name__,
@@ -556,7 +572,7 @@ def run_coop_mail_import(
             logger,
             logging.INFO if succeeded else logging.ERROR,
             "job_end",
-            job="coop-mail-import",
+            job="coop-mail-backfill" if backfill else "coop-mail-import",
             run_id=run_id,
             status="success" if succeeded else "failure",
             duration_ms=round((time.monotonic() - started_at) * 1000),
@@ -572,30 +588,73 @@ def fetch_coop_emails(days_back: int = 14) -> list[dict]:
 # JSON保存
 # ============================================================
 
-def save_results(results: list[dict]) -> None:
-    """パース結果をJSONファイルに保存する"""
+def _order_key(order: dict) -> tuple[str, str]:
+    """注文履歴の重複判定キー。同じメールの再取込は同じ注文日・指紋になる。
+    指紋が欠ける旧データはメール件名・日時で代用する。"""
+    fingerprint = order.get("source_fingerprint") or f"{order.get('email_subject', '')}|{order.get('email_date', '')}"
+    return order.get("order_date", ""), fingerprint
+
+
+def _load_order_history(all_file: Path) -> list[dict] | None:
+    """既存の注文履歴を読む。ファイルが無ければ空、読めなければ None（上書きで履歴を失わないため）。"""
+    if not all_file.exists():
+        return []
+    try:
+        data = json.loads(all_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    orders = data.get("orders") if isinstance(data, dict) else None
+    return orders if isinstance(orders, list) else None
+
+
+def save_results(results: list[dict], update_latest: bool = True) -> None:
+    """パース結果を注文履歴（coop_orders.json）へ追記し、最新注文を coop_latest.json に保存する"""
     if not results:
         log_event(logger, logging.INFO, "results_save_skipped", reason="no_results")
         return
 
     DATA_DIR.mkdir(exist_ok=True)
 
-    # 全結果をまとめたファイル
-    all_data = {
-        "last_updated": datetime.now().isoformat(timespec="seconds"),
-        "orders": results,
-    }
-
+    # 注文履歴：既存に追記（重複は除外）し、注文日の古い順に並べる
     all_file = DATA_DIR / "coop_orders.json"
-    with open(all_file, "w", encoding="utf-8") as f:
-        json.dump(all_data, f, ensure_ascii=False, indent=2)
-    log_event(
-        logger,
-        logging.INFO,
-        "results_saved",
-        target="coop_orders",
-        order_count=len(results),
-    )
+    history = _load_order_history(all_file)
+    if history is None:
+        log_event(
+            logger,
+            logging.ERROR,
+            "results_save_failed",
+            target="coop_orders",
+            reason="history_unreadable",
+        )
+    else:
+        known = {_order_key(order) for order in history if isinstance(order, dict)}
+        added = 0
+        for order in results:
+            key = _order_key(order)
+            if key in known:
+                continue
+            history.append(order)
+            known.add(key)
+            added += 1
+        if added:
+            history.sort(key=lambda order: order.get("order_date", "") if isinstance(order, dict) else "")
+            all_data = {
+                "last_updated": datetime.now().isoformat(timespec="seconds"),
+                "orders": history,
+            }
+            with open(all_file, "w", encoding="utf-8") as f:
+                json.dump(all_data, f, ensure_ascii=False, indent=2)
+        log_event(
+            logger,
+            logging.INFO,
+            "results_saved",
+            target="coop_orders",
+            order_count=len(history),
+            added_count=added,
+        )
+
+    if not update_latest:
+        return
 
     # 最新の注文だけ別ファイルにも保存（アプリからの取得用）
     latest = results[-1]  # 一番新しいもの
@@ -610,6 +669,21 @@ def save_results(results: list[dict]) -> None:
 # ============================================================
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="COOP注文メールを取得して保存する")
+    parser.add_argument(
+        "--backfill-days",
+        type=int,
+        default=None,
+        help="指定日数分の過去の注文メールを全件取り込み、注文履歴にだけ追記する（手動実行用）",
+    )
+    args = parser.parse_args()
+    if args.backfill_days is not None:
+        if args.backfill_days < 1:
+            parser.error("--backfill-days は1以上を指定してください")
+        run_coop_mail_import(days_back=args.backfill_days, save=True, backfill=True)
+        return
     run_coop_mail_import(days_back=14, save=True, skip_if_unchanged=True)
 
 

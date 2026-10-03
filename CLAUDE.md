@@ -90,7 +90,7 @@ coop-api/
 |---------|------|------|
 | GET | `/` | サービス情報 |
 | GET | `/api/coop/ingredients` | 最新食材リスト（カテゴリ分類済み） |
-| GET | `/api/coop/orders` | 全注文サマリー |
+| GET | `/api/coop/orders` | 注文履歴（新しい順、`include_items=true`で商品一覧付き） |
 | POST | `/api/coop/fetch?days_back=14` | メール手動取得 |
 | POST | `/api/coop/suggest-recipes` | レシピ提案（8001/8002に転送） |
 | POST | `/api/coop/meal-plan` | 献立作成（食材消費管理付き、最大7日） |
@@ -201,7 +201,9 @@ API_TOKEN=<任意のトークン>
 ### メール検索
 - IMAPのASCIIエンコード制限により日本語検索は不可
 - `X-GM-RAW "coopdeli"` で検索（転送メールでも本文にcoopdeliが含まれるためヒット）
-- 最新1通のみ処理（広告メール等が最新の場合は取得失敗する既知の制限あり）
+- 通常取込は新しい順に最大5通を確認し、最初に見つかった注文確認メール1通のみ処理する
+- 注文は `coop_orders.json` に追記され履歴として残る（注文日＋`source_fingerprint` で重複除外）。`coop_latest.json` は最新1件
+- `--backfill-days N` で過去分を全件取り込める（履歴のみ更新、キーワード分類のみ）
 
 ## よく使うコマンド
 

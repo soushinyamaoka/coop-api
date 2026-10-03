@@ -379,25 +379,44 @@ def get_ingredients(authorization: str = Header(default="")):
     }
 
 
+ORDER_ITEM_KEYS = ("ingredients", "kits", "ready_to_eat", "baby_food", "seasonings")
+
+
 @app.get("/api/coop/orders")
-def get_orders(authorization: str = Header(default="")):
-    """全注文一覧を返す"""
+def get_orders(
+    include_items: bool = Query(default=False),
+    authorization: str = Header(default=""),
+):
+    """注文履歴を新しい順に返す。include_items=true なら注文ごとの商品一覧も含める"""
     verify_token(authorization)
 
     data = load_all_orders()
     if not data:
         raise HTTPException(status_code=404, detail="注文データがありません")
 
-    # 概要のみ返す（詳細は /ingredients で取得）
     summaries = []
-    for order in data.get("orders", []):
-        summaries.append({
+    orders = [order for order in data.get("orders", []) if isinstance(order, dict)]
+    for order in sorted(orders, key=lambda o: o.get("order_date", ""), reverse=True):
+        summary = {
             "order_date": order.get("order_date", ""),
+            "source_fingerprint": order.get("source_fingerprint", ""),
             "email_subject": order.get("email_subject", ""),
             "total_items": order.get("total_items", 0),
             "ingredient_count": len(order.get("ingredients", [])),
             "kit_count": len(order.get("kits", [])),
-        })
+        }
+        if include_items:
+            items = [item for key in ORDER_ITEM_KEYS for item in order.get(key, [])]
+            summary["items"] = [
+                {
+                    "name": item.get("name", ""),
+                    "original_name": item.get("original_name", ""),
+                    "quantity": item.get("quantity", 0),
+                    "category": item.get("category", ""),
+                }
+                for item in apply_category_overrides(items)
+            ]
+        summaries.append(summary)
 
     return {
         "last_updated": data.get("last_updated", ""),

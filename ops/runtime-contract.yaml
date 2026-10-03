@@ -58,7 +58,12 @@ data:
     - path: /opt/apps/coop-api/data/coop_orders.json
       backup_required: true
       regenerable: false
-      note: 取込ごとに orders 配列（通常1件）で上書きされ、実行間で蓄積されない。2026-09-27にsource_fingerprint項目を追加（既存データの移行不要）。
+      note: >
+        現行production（注文履歴化の変更は未反映）では取込ごとに orders 配列（通常1件）で上書きされ、実行間で蓄積されない。
+        2026-09-27にsource_fingerprint項目を追加（既存データの移行不要）。
+        2026-10-04ローカル実装（未deploy・notice未作成）: 注文日＋source_fingerprintで重複除外して追記する注文履歴に変更。
+        書込方式は従来どおり同一pathへの直接書込で一時fileは作らない。既存fileが読めない場合は上書きせず履歴保存をskipする。
+        反映後は注文ごとに単調増加し、失うと過去注文を再取得できない場合がある（--backfill-daysでGmailに残る範囲は再取込可能）。
     - path: /opt/apps/coop-api/data/coop_latest.json
       backup_required: true
       regenerable: false

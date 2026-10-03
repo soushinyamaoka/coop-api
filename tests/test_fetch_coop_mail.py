@@ -237,6 +237,115 @@ def test_manual_fetch_busy_does_not_log_job_failed(monkeypatch, tmp_path, caplog
     assert job_ends[0].event_fields["status"] == "success"
 
 
+def _order(order_date, fingerprint, name="しょうゆ"):
+    return {
+        "order_date": order_date,
+        "source_fingerprint": fingerprint,
+        "total_items": 1,
+        "ingredients": [],
+        "kits": [],
+        "ready_to_eat": [],
+        "baby_food": [],
+        "seasonings": [{"order_no": "1", "name": name, "original_name": name, "quantity": 1, "category": "調味料・日用品"}],
+        "excluded": [],
+    }
+
+
+def test_save_results_appends_history_without_duplicates(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(fetch, "DATA_DIR", data_dir)
+
+    fetch.save_results([_order("2026-09-20", "a")])
+    fetch.save_results([_order("2026-09-27", "b")])
+    fetch.save_results([_order("2026-09-27", "b")])  # 同じメールの再取込
+    fetch.save_results([_order("2026-10-04", "a")])  # 内容が同じでも別週の注文は残す
+
+    history = json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]
+    assert [(o["order_date"], o["source_fingerprint"]) for o in history] == [
+        ("2026-09-20", "a"), ("2026-09-27", "b"), ("2026-10-04", "a"),
+    ]
+    latest = json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))
+    assert latest["order_date"] == "2026-10-04"
+
+
+def test_save_results_keeps_unreadable_history(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(fetch, "DATA_DIR", data_dir)
+    all_file = data_dir / "coop_orders.json"
+    all_file.write_text("{broken", encoding="utf-8")
+
+    fetch.save_results([_order("2026-10-04", "a")])
+
+    assert all_file.read_text(encoding="utf-8") == "{broken"
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-10-04"
+
+
+class MultiFakeMail(FakeMail):
+    def __init__(self, raw_emails):
+        self.raw_emails = raw_emails
+
+    def search(self, *_args):
+        return "OK", [b" ".join(str(i + 1).encode() for i in range(len(self.raw_emails)))]
+
+    def fetch(self, mail_id, *_args):
+        return "OK", [(mail_id, self.raw_emails[int(mail_id) - 1])]
+
+
+def make_dated_email(body, date):
+    msg = EmailMessage()
+    msg["Subject"] = "COOP注文確認"
+    msg["From"] = "example@example.invalid"
+    msg["Date"] = date
+    msg.set_content(body)
+    return msg.as_bytes()
+
+
+def test_backfill_imports_all_orders_into_history_only(monkeypatch, tmp_path):
+    data_dir, classifier_calls = setup_import(monkeypatch, tmp_path)
+    emails = [
+        make_dated_email("注文番号：1\n商品名：しょうゆ\n数量：1点", "Sun, 13 Sep 2026 07:00:00 +0900"),
+        make_dated_email("広告メールです", "Mon, 14 Sep 2026 07:00:00 +0900"),
+        make_dated_email("注文番号：2\n商品名：みそ\n数量：1点", "Sun, 20 Sep 2026 07:00:00 +0900"),
+    ]
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(emails))
+    latest_file = data_dir / "coop_latest.json"
+    latest_file.write_text(json.dumps({"sentinel": "keep"}), encoding="utf-8")
+
+    result = fetch.run_coop_mail_import(days_back=365, save=True, backfill=True)
+
+    assert [o["order_date"] for o in result] == ["2026-09-13", "2026-09-20"]
+    assert classifier_calls == []  # 過去分取り込みではJevを呼ばない
+    history = json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]
+    assert [o["order_date"] for o in history] == ["2026-09-13", "2026-09-20"]
+    assert json.loads(latest_file.read_text(encoding="utf-8")) == {"sentinel": "keep"}
+
+
+def test_orders_endpoint_returns_history_newest_first_with_items(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    with patch("dotenv.load_dotenv", return_value=False), patch.object(Path, "mkdir"):
+        import coop_api_server as server
+
+    monkeypatch.setattr(server, "verify_token", lambda _authorization: None)
+    monkeypatch.setattr(server, "load_all_orders", lambda: {
+        "last_updated": "2026-10-04T07:00:00",
+        "orders": [_order("2026-09-27", "a", "しょうゆ"), _order("2026-10-04", "b", "みそ")],
+    })
+    monkeypatch.setattr(server, "load_category_overrides", lambda: {"みそ": "食材"})
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    summary = client.get("/api/coop/orders").json()
+    assert [o["order_date"] for o in summary["orders"]] == ["2026-10-04", "2026-09-27"]
+    assert "items" not in summary["orders"][0]
+
+    detail = client.get("/api/coop/orders?include_items=true").json()
+    assert detail["orders"][0]["items"] == [
+        {"name": "みそ", "original_name": "みそ", "quantity": 1, "category": "食材"},
+    ]
+
+
 def test_fetch_endpoint_returns_busy_without_running_import(monkeypatch):
     from pathlib import Path
 

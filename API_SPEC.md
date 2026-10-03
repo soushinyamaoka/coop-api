@@ -65,7 +65,13 @@
 
 ## GET /api/coop/orders
 
-全注文の一覧サマリーを返す（詳細は `/ingredients` で取得）。
+注文履歴を新しい順に返す。取込ごとに `data/coop_orders.json` へ追記され（同じ注文日・`source_fingerprint` の重複は除外）、過去の注文が残る。
+
+**クエリパラメータ**
+
+| パラメータ | 型 | デフォルト | 説明 |
+|-----------|-----|----------|------|
+| `include_items` | bool | false | true なら注文ごとの商品一覧（`items`）を含める。カテゴリは学習データ適用後の値 |
 
 **レスポンス**
 ```json
@@ -75,14 +81,22 @@
   "orders": [
     {
       "order_date": "2026-03-06",
+      "source_fingerprint": "3f2a…",
       "email_subject": "eフレンズ注文済メモメール",
       "total_items": 12,
       "ingredient_count": 8,
-      "kit_count": 1
+      "kit_count": 1,
+      "items": [
+        { "name": "豚小間切", "original_name": "お米育ち豚小間切200g", "quantity": 1, "category": "食材" }
+      ]
     }
   ]
 }
 ```
+
+`items` は `include_items=true` の時だけ含まれる。金額は注文メールから抽出していないため含まない。
+
+**過去分の取り込み（手動実行）**: `python fetch_coop_mail.py --backfill-days 365` で、指定日数内の注文確認メールを全件取り込み注文履歴にだけ追記する（`coop_latest.json` は更新しない、分類はキーワード判定のみでJevを呼ばない、ログの job 名は `coop-mail-backfill`）。production での実行は VPS管理側の手順に従う。
 
 ---
 
