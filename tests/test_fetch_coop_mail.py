@@ -321,6 +321,96 @@ def test_backfill_imports_all_orders_into_history_only(monkeypatch, tmp_path):
     assert json.loads(latest_file.read_text(encoding="utf-8")) == {"sentinel": "keep"}
 
 
+def _job_end_status(caplog):
+    ends = [r for r in caplog.records if getattr(r, "event", None) == "job_end"]
+    assert len(ends) == 1
+    return ends[0].event_fields["status"]
+
+
+class PartiallyFailingMail(MultiFakeMail):
+    """指定した番号のメッセージだけ取得に失敗するIMAP。"""
+
+    def __init__(self, raw_emails, failing_ids):
+        super().__init__(raw_emails)
+        self.failing_ids = failing_ids
+
+    def fetch(self, mail_id, *_args):
+        if int(mail_id) in self.failing_ids:
+            return "NO", []
+        return super().fetch(mail_id, *_args)
+
+
+def test_backfill_partial_fetch_failure_is_failure_and_rerun_is_idempotent(monkeypatch, tmp_path, caplog):
+    data_dir, _ = setup_import(monkeypatch, tmp_path)
+    emails = [
+        make_dated_email("注文番号：1\n商品名：しょうゆ\n数量：1点", "Sun, 13 Sep 2026 07:00:00 +0900"),
+        make_dated_email("注文番号：2\n商品名：みそ\n数量：1点", "Sun, 20 Sep 2026 07:00:00 +0900"),
+        make_dated_email("注文番号：3\n商品名：さとう\n数量：1点", "Sun, 27 Sep 2026 07:00:00 +0900"),
+    ]
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: PartiallyFailingMail(emails, {2}))
+
+    result = fetch.run_coop_mail_import(days_back=365, save=True, backfill=True)
+
+    # 取得できた分は保存するが、一部取得なのでジョブは失敗として記録する
+    assert [o["order_date"] for o in result] == ["2026-09-13", "2026-09-27"]
+    assert _job_end_status(caplog) == "failure"
+    history = json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]
+    assert [o["order_date"] for o in history] == ["2026-09-13", "2026-09-27"]
+
+    # 失敗が解消した再実行は成功し、既に保存した注文は重複しない
+    caplog.clear()
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(emails))
+    fetch.run_coop_mail_import(days_back=365, save=True, backfill=True)
+    assert _job_end_status(caplog) == "success"
+    history = json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]
+    assert [o["order_date"] for o in history] == ["2026-09-13", "2026-09-20", "2026-09-27"]
+
+
+def test_regular_import_still_succeeds_when_older_candidate_fails(monkeypatch, tmp_path, caplog):
+    """通常取込は最新の注文確認メールが1通取れれば成功（従来の挙動を変えない）。"""
+    data_dir, _ = setup_import(monkeypatch, tmp_path)
+    emails = [
+        make_dated_email("注文番号：1\n商品名：しょうゆ\n数量：1点", "Sun, 13 Sep 2026 07:00:00 +0900"),
+        make_dated_email("注文番号：2\n商品名：みそ\n数量：1点", "Sun, 20 Sep 2026 07:00:00 +0900"),
+    ]
+    # 新しい順に処理される。最新(2番)は取得でき、1番は処理されない。
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: PartiallyFailingMail(emails, {1}))
+
+    fetch.run_coop_mail_import(days_back=14, save=True)
+
+    assert _job_end_status(caplog) == "success"
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-09-20"
+
+
+def test_unreadable_history_marks_job_failure_but_still_updates_latest(monkeypatch, tmp_path, caplog):
+    data_dir, _ = setup_import(monkeypatch, tmp_path)
+    history_file = data_dir / "coop_orders.json"
+    history_file.write_text("{broken", encoding="utf-8")
+
+    fetch.run_coop_mail_import(save=True)
+
+    assert _job_end_status(caplog) == "failure"
+    assert history_file.read_text(encoding="utf-8") == "{broken"  # 既存fileは上書きしない
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-09-27"
+    failed = [r for r in caplog.records if getattr(r, "event", None) == "results_save_failed"]
+    assert [r.event_fields["reason"] for r in failed] == ["history_unreadable"]
+
+
+def test_history_write_failure_marks_job_failure_but_still_updates_latest(monkeypatch, tmp_path, caplog):
+    data_dir, _ = setup_import(monkeypatch, tmp_path)
+    # 履歴fileの位置にdirectoryを置き、読取は成功扱い（空履歴）・書込だけ失敗させる
+    (data_dir / "coop_orders.json").mkdir()
+    monkeypatch.setattr(fetch, "_load_order_history", lambda _path: [])
+
+    fetch.run_coop_mail_import(save=True)
+
+    assert _job_end_status(caplog) == "failure"
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-09-27"
+    failed = [r for r in caplog.records if getattr(r, "event", None) == "results_save_failed"]
+    assert [r.event_fields["reason"] for r in failed] == ["history_write_failed"]
+    assert "error_class" in failed[0].event_fields
+
+
 def test_orders_endpoint_returns_history_newest_first_with_items(monkeypatch, tmp_path):
     from pathlib import Path
 

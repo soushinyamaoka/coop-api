@@ -461,6 +461,10 @@ def _fetch_coop_emails(
                 continue
 
         results.reverse()  # 新しい順に処理したので古い順へ戻す（末尾が最新）
+        if collect_all:
+            # 過去分取込は全件が対象。1通でも取得・解析に失敗したら一部取得なので失敗とする。
+            # 取得できた分は履歴へ保存され、再実行しても重複しない。
+            return results, not had_message_failure
         return results, bool(results) or not had_message_failure
 
     except imaplib.IMAP4.error as exc:
@@ -538,12 +542,13 @@ def run_coop_mail_import(
                     skip_if_unchanged=skip_if_unchanged and not backfill,
                     collect_all=backfill,
                 )
+                saved_ok = True
                 if save and results:
                     if backfill:
-                        save_results(results, update_latest=False)
+                        saved_ok = save_results(results, update_latest=False) is not False
                     else:
-                        save_results(results)
-                succeeded = fetch_succeeded
+                        saved_ok = save_results(results) is not False
+                succeeded = fetch_succeeded and saved_ok
                 return results
         except ImportBusyError:
             log_event(logger, logging.INFO, "import_lock", result="busy")
@@ -607,18 +612,24 @@ def _load_order_history(all_file: Path) -> list[dict] | None:
     return orders if isinstance(orders, list) else None
 
 
-def save_results(results: list[dict], update_latest: bool = True) -> None:
-    """パース結果を注文履歴（coop_orders.json）へ追記し、最新注文を coop_latest.json に保存する"""
+def save_results(results: list[dict], update_latest: bool = True) -> bool:
+    """パース結果を注文履歴（coop_orders.json）へ追記し、最新注文を coop_latest.json に保存する。
+
+    注文履歴を保存できなかった場合は False を返す（呼び出し側がジョブ失敗として扱う）。
+    その場合も、最新注文（coop_latest.json）の保存は従来どおり続ける。
+    """
     if not results:
         log_event(logger, logging.INFO, "results_save_skipped", reason="no_results")
-        return
+        return True
 
     DATA_DIR.mkdir(exist_ok=True)
 
     # 注文履歴：既存に追記（重複は除外）し、注文日の古い順に並べる
+    history_saved = True
     all_file = DATA_DIR / "coop_orders.json"
     history = _load_order_history(all_file)
     if history is None:
+        history_saved = False
         log_event(
             logger,
             logging.ERROR,
@@ -636,25 +647,37 @@ def save_results(results: list[dict], update_latest: bool = True) -> None:
             history.append(order)
             known.add(key)
             added += 1
-        if added:
-            history.sort(key=lambda order: order.get("order_date", "") if isinstance(order, dict) else "")
-            all_data = {
-                "last_updated": datetime.now().isoformat(timespec="seconds"),
-                "orders": history,
-            }
-            with open(all_file, "w", encoding="utf-8") as f:
-                json.dump(all_data, f, ensure_ascii=False, indent=2)
-        log_event(
-            logger,
-            logging.INFO,
-            "results_saved",
-            target="coop_orders",
-            order_count=len(history),
-            added_count=added,
-        )
+        try:
+            if added:
+                history.sort(key=lambda order: order.get("order_date", "") if isinstance(order, dict) else "")
+                all_data = {
+                    "last_updated": datetime.now().isoformat(timespec="seconds"),
+                    "orders": history,
+                }
+                with open(all_file, "w", encoding="utf-8") as f:
+                    json.dump(all_data, f, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            history_saved = False
+            log_event(
+                logger,
+                logging.ERROR,
+                "results_save_failed",
+                target="coop_orders",
+                reason="history_write_failed",
+                error_class=type(exc).__name__,
+            )
+        else:
+            log_event(
+                logger,
+                logging.INFO,
+                "results_saved",
+                target="coop_orders",
+                order_count=len(history),
+                added_count=added,
+            )
 
     if not update_latest:
-        return
+        return history_saved
 
     # 最新の注文だけ別ファイルにも保存（アプリからの取得用）
     latest = results[-1]  # 一番新しいもの
@@ -662,6 +685,7 @@ def save_results(results: list[dict], update_latest: bool = True) -> None:
     with open(latest_file, "w", encoding="utf-8") as f:
         json.dump(latest, f, ensure_ascii=False, indent=2)
     log_event(logger, logging.INFO, "results_saved", target="coop_latest", order_count=1)
+    return history_saved
 
 
 # ============================================================
