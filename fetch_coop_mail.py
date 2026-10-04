@@ -18,6 +18,7 @@ from email.message import Message
 import os
 import json
 import logging
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -522,6 +523,13 @@ def run_coop_mail_import(
     backfill=True は期間内の注文メールを全件取り込み、注文履歴にだけ追記する
     （最新注文ファイル coop_latest.json は更新しない）。
     """
+    return _run_coop_mail_import_job(days_back, save, skip_if_unchanged, backfill)[0]
+
+
+def _run_coop_mail_import_job(
+    days_back: int, save: bool, skip_if_unchanged: bool, backfill: bool
+) -> tuple[list[dict], bool]:
+    """run_coop_mail_import の本体。取得結果と、job_endに記録するのと同じ成否を返す。"""
     run_id = uuid.uuid4().hex
     started_at = time.monotonic()
     succeeded = False
@@ -549,13 +557,13 @@ def run_coop_mail_import(
                     else:
                         saved_ok = save_results(results) is not False
                 succeeded = fetch_succeeded and saved_ok
-                return results
+                return results, succeeded
         except ImportBusyError:
             log_event(logger, logging.INFO, "import_lock", result="busy")
             log_event(logger, logging.INFO, "import_skipped", reason="locked")
             succeeded = True
             if skip_if_unchanged:
-                return []
+                return [], succeeded
             raise
     except ImportBusyError:
         # busyは別プロセス/スレッドとの正常な競合であり、内部failureではない。
@@ -706,8 +714,18 @@ def main():
     if args.backfill_days is not None:
         if args.backfill_days < 1:
             parser.error("--backfill-days は1以上を指定してください")
-        run_coop_mail_import(days_back=args.backfill_days, save=True, backfill=True)
+        # 手動実行のため、失敗（一部取得失敗・履歴保存失敗・別の取込が実行中）は終了コード1で返す。
+        # 成否の内容は job_end の status と同じ。取得済みの分は保存済みで、再実行しても重複しない。
+        try:
+            _, succeeded = _run_coop_mail_import_job(
+                days_back=args.backfill_days, save=True, skip_if_unchanged=False, backfill=True
+            )
+        except ImportBusyError:
+            sys.exit(1)
+        if not succeeded:
+            sys.exit(1)
         return
+    # cronの通常取込は従来どおり、失敗でも終了コードを変えない（成否はjob_endで判別する）。
     run_coop_mail_import(days_back=14, save=True, skip_if_unchanged=True)
 
 

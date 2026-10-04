@@ -366,6 +366,59 @@ def test_backfill_partial_fetch_failure_is_failure_and_rerun_is_idempotent(monke
     assert [o["order_date"] for o in history] == ["2026-09-13", "2026-09-20", "2026-09-27"]
 
 
+def _run_main(monkeypatch, *args):
+    monkeypatch.setattr(sys, "argv", ["fetch_coop_mail.py", *args])
+    try:
+        fetch.main()
+    except SystemExit as exc:
+        return exc.code
+    return 0
+
+
+def _three_orders():
+    return [
+        make_dated_email("注文番号：1\n商品名：しょうゆ\n数量：1点", "Sun, 13 Sep 2026 07:00:00 +0900"),
+        make_dated_email("注文番号：2\n商品名：みそ\n数量：1点", "Sun, 20 Sep 2026 07:00:00 +0900"),
+        make_dated_email("注文番号：3\n商品名：さとう\n数量：1点", "Sun, 27 Sep 2026 07:00:00 +0900"),
+    ]
+
+
+def test_backfill_cli_exit_code_is_nonzero_on_partial_failure(monkeypatch, tmp_path):
+    setup_import(monkeypatch, tmp_path)
+    emails = _three_orders()
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: PartiallyFailingMail(emails, {2}))
+    assert _run_main(monkeypatch, "--backfill-days", "365") == 1
+
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(emails))
+    assert _run_main(monkeypatch, "--backfill-days", "365") == 0
+
+
+def test_backfill_cli_exit_code_is_nonzero_when_history_cannot_be_saved(monkeypatch, tmp_path):
+    data_dir, _ = setup_import(monkeypatch, tmp_path)
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(_three_orders()))
+    (data_dir / "coop_orders.json").write_text("{broken", encoding="utf-8")
+    assert _run_main(monkeypatch, "--backfill-days", "365") == 1
+
+
+def test_backfill_cli_exit_code_is_nonzero_when_import_is_busy(monkeypatch, tmp_path):
+    setup_import(monkeypatch, tmp_path)
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(_three_orders()))
+    with fetch._coop_import_lock():
+        assert _run_main(monkeypatch, "--backfill-days", "365") == 1
+
+
+def test_backfill_cli_rejects_non_positive_days(monkeypatch, tmp_path):
+    setup_import(monkeypatch, tmp_path)
+    assert _run_main(monkeypatch, "--backfill-days", "0") == 2
+
+
+def test_regular_cli_exit_code_is_unchanged_on_failure(monkeypatch, tmp_path):
+    """cronの通常取込は、履歴保存に失敗しても従来どおり終了コード0（成否はjob_endで判別する）。"""
+    data_dir, _ = setup_import(monkeypatch, tmp_path)
+    (data_dir / "coop_orders.json").write_text("{broken", encoding="utf-8")
+    assert _run_main(monkeypatch) == 0
+
+
 def test_regular_import_still_succeeds_when_older_candidate_fails(monkeypatch, tmp_path, caplog):
     """通常取込は最新の注文確認メールが1通取れれば成功（従来の挙動を変えない）。"""
     data_dir, _ = setup_import(monkeypatch, tmp_path)
