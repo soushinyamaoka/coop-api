@@ -6,11 +6,11 @@ policy_bundle_version: 2026-09-04.1
 notice_id: 20261004-COOPAPI-006
 app: coop-api
 source_branch: main
-source_commit: 78431bbebb8fe170d6eb4f50478496fb29817bc8
-production_baseline_commit: c1c0505d88f904529a2e1dafe1066aad6c360430   # 未確認。下記「未解決事項」1参照
-release_commits: 78431bbebb8fe170d6eb4f50478496fb29817bc8
+source_commit: 684d77e84b58bbcb80db95b9beb54917dfd64ad2
+production_baseline_commit: c1c0505d88f904529a2e1dafe1066aad6c360430   # VPS1の稼働hashからVPS管理が確認（2026-10-04）
+release_commits: 78431bbebb8fe170d6eb4f50478496fb29817bc8, 684d77e84b58bbcb80db95b9beb54917dfd64ad2
 impact_level: L3
-status: draft
+status: ready_for_review
 created_by: Claude
 production_change: required
 vps_management_handoff: required
@@ -43,6 +43,8 @@ server_impact: approval_required
 | `GET /api/coop/orders` | 概要のみ。file順（古い順） | 新しい順。`source_fingerprint` を追加。`include_items=true` で `items`（name、original_name、quantity、category）を追加 |
 | 通常取込（cron・`POST /api/coop/fetch`） | 最新1通の注文を処理 | 変更なし（履歴への追記だけ増える） |
 | 過去分取込 | なし | 手動CLIのみ（`--backfill-days N`）。cron・APIからは実行されない |
+| ジョブの成否（`job_end.status`） | 最新の注文確認メールを1通取れれば成功 | 通常取込の条件は不変。加えて、**注文履歴を保存できなかった場合（既存fileが読めない・書込失敗）は `failure`**。過去分取込は、**1通でも取得・解析に失敗したら `failure`**（取得できた分は保存済みで、再実行しても重複しない） |
+| 履歴の書込失敗時の最新注文 | （該当なし） | 最新注文（`coop_latest.json`）の更新は続ける。履歴の失敗でジョブが中断し、最新注文が更新されなくなることはない |
 
 ## 影響対象
 
@@ -51,7 +53,8 @@ server_impact: approval_required
 - cron/timer/worker: 時刻・定義は変更なし。07:00/20:00の取込は同じ `.coop_import.lock` を使う。過去分取込も同じlockを取る
 - dependency: 変更なし（`requirements.txt` は不変）
 - data/DB/volume: `data/coop_orders.json` の追記化。新しいfile・directoryは作らない。1注文あたり数KB想定（実測は未実施）
-- log/monitoring: 過去分取込のjob名は `coop-mail-backfill`（既存の `job_start` / `job_end` 規約に従う）。通常取込の `coop-mail-import` は不変。`results_saved`（`target=coop_orders`）に `added_count` を追加。履歴が読めない場合は `results_save_failed`（`reason=history_unreadable`）をerrorで記録する。商品名・本文は出力しない
+- log/monitoring: 過去分取込のjob名は `coop-mail-backfill`（既存の `job_start` / `job_end` 規約に従う）。通常取込の `coop-mail-import` は不変。`results_saved`（`target=coop_orders`）に `added_count` を追加。履歴を保存できない場合は `results_save_failed` をerrorで記録する（`reason=history_unreadable`＝既存fileが読めない、`reason=history_write_failed`＝書込失敗。後者は `error_class` を伴う）。同じrunの `job_end` は `status=failure`、level=error になる。商品名・本文は出力しない
+- `POST /api/coop/fetch` の応答は変更しない（取得した注文件数を返す）。履歴の保存失敗はAPI応答ではなく、ログの `results_save_failed` と `job_end` で判別する
 - 配布対象: `coop_api_server.py`、`fetch_coop_mail.py`（`deploy-files.txt` の5file中、変更は2file）。`.env`、`data/`、test、通知書は配布対象外
 
 ## production変更
@@ -95,7 +98,10 @@ server_impact: approval_required
 ## Health・テスト
 
 - health contract変更: なし
-- 実施テスト（ローカル、合成データのみ）: `pytest`（86 passed、POSIX所有検証2 skipped）。追加した主なテスト:
+- 実施テスト（ローカル、合成データのみ）: `pytest`（90 passed、POSIX所有検証2 skipped）。追加した主なテスト:
+  - 過去分取込の一部取得失敗が `job_end=failure` になり、取得済みの分は保存され、失敗解消後の再実行は成功して重複しないこと
+  - 履歴が読めない場合・書込に失敗した場合に `job_end=failure` となり、最新注文は更新されること（修正前のコードでは3件が失敗することを確認済み）
+  - 通常取込は、従来どおり最新の注文確認メールが取れれば成功すること
   - 追記と重複除外（同じメールの再取込、同じ内容で別週の注文は残す）
   - 既存履歴が壊れている場合に上書きしないこと
   - 過去分取込が全件を履歴にだけ追記し、`coop_latest.json` を変えず、Jevを呼ばないこと
@@ -115,20 +121,35 @@ server_impact: approval_required
 
 ## 提出前セルフチェック
 
-- 実施日: 2026-10-04 JST。本noticeは `status: draft` のまま。
+### 再提出（2026-10-04 JST）の差分確認
+
+初回提出（draft・source `78431bb`）に対するVPS管理側レビュー（受理台帳 `blocked`）の指摘を受けた再提出。前回review対象commit: `843487a`（通知書の最終commit。コードは `78431bb`）。
+
+- 指摘: ①過去分取込の部分取得失敗、②注文履歴の保存失敗が、成功として記録される経路がある。
+- 対応commit: `684d77e84b58bbcb80db95b9beb54917dfd64ad2`（`fetch_coop_mail.py` とtestのみ。`coop_api_server.py`・依存・配布一覧・認証・data形式は不変）。
+  - ①: 過去分取込は1通でも取得・解析に失敗したら `job_end=failure`。取得済みの分は保存し、再実行は重複しない。
+  - ②: 履歴が読めない・書込に失敗した場合は `job_end=failure`。あわせて、履歴の書込失敗でジョブが `job_failed` で中断し最新注文が更新されなくなる経路（修正前は `OSError` が伝播）を解消し、最新注文の保存は続ける。
+  - 通常取込の成功条件（最新の注文確認メールが1通取れれば成功）は変更していない。
+- 確認: pytest 90 passed（2 skipped）。新規4件のうち3件は修正前コードで失敗することを確認し、残る1件（通常取込の成功条件）は修正の前後とも通る。
+- baseline: VPS管理側がVPS1の稼働hashから `c1c0505` と確認済み（初回の仮置きは確定）。005の分類override保存・一時directory・Jev cache保存先は反映済みとして扱う。
+- 未実施: VPS管理側 `tools/review_notice_preflight.ps1`（この環境のPowerShell 5.1では実行できない。前回と同じ）。再提出commit・実remoteの一致確認は、push後にVPS管理側で行う。
+- 以下は初回提出時の確認結果（コード差分は上記以外に変更なし）。
+
+### 初回提出時の確認
+
+- 実施日: 2026-10-04 JST。
 - 確認できた項目:
   - source `78431bb`（コード変更）は実remoteの `main` へpush済み。通知書commit `f80973d` も同じ `main` に載り、local HEADと `git ls-remote` の結果が一致した。
   - 配布対象（`deploy-files.txt` の5file）のうち、baseline想定 `c1c0505` からの変更は `coop_api_server.py` と `fetch_coop_mail.py` の2fileのみ。`c1c0505..78431bb` の他の差分は `ops/`・`API_SPEC.md`・`CLAUDE.md`・testで、配布対象外。依存・認証・bind・cron・env変数名は不変。
   - 追跡対象のworking treeはcleanになる（`.gitignore` へのローカル設定file除外1行はcommit `ee1ccb4`。配布対象外）。未追跡の `AGENTS.md` は既存で配布一覧に含まれない。
   - ローカルのpytestは86 passed（2 skipped）。秘密値・IP・URLの混入なし（通知書と差分を走査）。
 - **未実施**: VPS管理側の `tools/review_notice_preflight.ps1`。この環境のPowerShell 5.1では構文エラー（BOMなしUTF-8）となり、BOM付きの一時copyでも .NET Core専用のAPI（`Path.GetRelativePath`）で停止した。PowerShell 7が必要と思われる。VPS管理側での実行を依頼する。
-- 実施していない確認: production baseline（commit）の照合（未解決事項1）、POSIXでのfile mode・group、実Gmailでの過去分取込。
+- 実施していない確認: POSIXでのfile mode・group、実Gmailでの過去分取込（baselineの照合は、その後VPS管理側が完了）。
 
 ## 未解決事項
 
-1. **production baselineが未確認**。`production_deployments.yaml` の `coop-api` は `f26c211`（2026-08-30）のまま更新されていない。通知005は技術受理され、VPS管理側が本番反映を報告したとされるが、反映したsource commitの記録をこちらでは確認できていない。`production_baseline_commit` と `release_commits` は、VPS管理側の確認結果で確定させる。現在の値は005の最終source `c1c0505` を仮置きした。
-   - 仮置きの根拠: `c1c0505..HEAD` のコード差分は本noticeの `78431bb` だけ（それ以外は `ops/` の文書のみ）。005が未反映なら、005の変更（分類PUTの排他・一時directory・Jev cache保存先）も同じreleaseに含まれ、backup除外条件が前提になる。
-2. 通知005の反映状態と、`coop_orders.json` のbackup確認（反映前）をVPS管理側で確認する。
+1. （解消）production baselineは、VPS管理側がVPS1の稼働hashから `c1c0505` と確認した。なお `production_deployments.yaml` の記載は古いままで、正本の更新はVPS管理側の作業。
+2. 反映前の `coop_orders.json` のbackup確認をVPS管理側で行う。
 3. 過去分取込の本番実行は別承認とし、日数・時刻・実行ユーザー・実行後の確認をVPS管理側で決める。
 4. 金額は対象外。メール本文に金額があるかは未確認。
 5. meal-planner-appの「過去の注文」画面は実装済み・端末配信は別途。サーバー未反映の間は、日付と件数のみ表示し「商品一覧はサーバー更新後に表示されます」と出る。
@@ -139,13 +160,13 @@ VPS管理レビュー後に別途調整。急がない。
 
 ## VPS管理チャットへの引き継ぎ
 
-- 引き継ぎ要否: 必要（ただし、draftのため提出はpushとpreflight完了後）
-- ユーザーへの案内: 提出前セルフチェックの完了後に、定型案内を表示する
+- 引き継ぎ要否: 必要
+- ユーザーへの案内: 再提出。VPS管理チャットへ、再レビューの依頼を送る
 - VPS管理チャットへ渡すローカル絶対path: C:\work\PRG\HomeTools\meal-planner\api\coop-api\ops\server-change-notices\20261004-COOPAPI-006-summary.md
 
 ## Approval
 
-- app owner: 提出前（draft）
-- VPS management review: 未実施
+- app owner: 初回提出後、指摘（部分取得失敗・履歴保存失敗の成功扱い）を修正して再提出
+- VPS management review: 初回は `blocked`（2026-10-04）。再reviewは未実施
 - production approval: 未実施
 - related task_id: なし（ユーザー指示によるClaude直接実装）
