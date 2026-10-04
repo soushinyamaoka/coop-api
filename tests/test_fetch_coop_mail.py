@@ -400,11 +400,31 @@ def test_backfill_cli_exit_code_is_nonzero_when_history_cannot_be_saved(monkeypa
     assert _run_main(monkeypatch, "--backfill-days", "365") == 1
 
 
-def test_backfill_cli_exit_code_is_nonzero_when_import_is_busy(monkeypatch, tmp_path):
-    setup_import(monkeypatch, tmp_path)
+def test_backfill_cli_busy_exits_1_but_logs_skipped_and_job_end_success(monkeypatch, tmp_path, caplog):
+    """別の取込が実行中の場合、CLIは終了コード1だが、ログは「失敗」ではなく「実行しなかった」を記録する。
+
+    busyは別プロセスとの正常な競合であり、障害ではない（cronの扱いと同じ）。
+    - CLIの終了コード: 1（人が実行した過去分取込が行われていないことを、呼び出し元へ知らせる）
+    - ログ: import_lock(busy) と import_skipped(reason=locked)、job_end(status=success)。job_failedは出さない
+    したがって、終了コード1だけで障害と判断せず、ログのimport_skippedで「未実行」と判別する。
+    """
+    data_dir, _ = setup_import(monkeypatch, tmp_path)
     monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(_three_orders()))
     with fetch._coop_import_lock():
         assert _run_main(monkeypatch, "--backfill-days", "365") == 1
+
+    events = {}
+    for record in caplog.records:
+        event = getattr(record, "event", None)
+        if event:
+            events.setdefault(event, []).append(record)
+    assert [r.event_fields["result"] for r in events["import_lock"]] == ["busy"]
+    assert [r.event_fields["reason"] for r in events["import_skipped"]] == ["locked"]
+    assert [r.event_fields["status"] for r in events["job_end"]] == ["success"]
+    assert events["job_end"][0].event_fields["job"] == "coop-mail-backfill"
+    assert "job_failed" not in events
+    assert "external_call_started" not in events  # Gmailへ接続していない
+    assert not (data_dir / "coop_orders.json").exists()  # 何も保存していない
 
 
 def test_backfill_cli_rejects_non_positive_days(monkeypatch, tmp_path):

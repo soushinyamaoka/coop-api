@@ -714,8 +714,12 @@ def main():
     if args.backfill_days is not None:
         if args.backfill_days < 1:
             parser.error("--backfill-days は1以上を指定してください")
-        # 手動実行のため、失敗（一部取得失敗・履歴保存失敗・別の取込が実行中）は終了コード1で返す。
-        # 成否の内容は job_end の status と同じ。取得済みの分は保存済みで、再実行しても重複しない。
+        # 手動実行のため、取込が完了しなかった場合は終了コード1で返す。
+        # - 一部取得失敗・履歴保存失敗: job_end の status=failure と同じ判定。取得済みの分は保存済みで、
+        #   再実行しても重複しない。
+        # - 別の取込が実行中（busy）: 終了コードは1だが、ログは障害ではなく「未実行」を記録する
+        #   （import_skipped reason=locked と job_end status=success。job_failedは出さない）。
+        #   終了コードだけで障害と判断せず、ログのimport_skippedで判別する。
         try:
             _, succeeded = _run_coop_mail_import_job(
                 days_back=args.backfill_days, save=True, skip_if_unchanged=False, backfill=True
