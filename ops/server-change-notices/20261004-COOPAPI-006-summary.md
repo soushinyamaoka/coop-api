@@ -115,7 +115,14 @@ server_impact: approval_required
 
 ## 提出前セルフチェック
 
-- 未実施。本noticeは `status: draft`。source・noticeのpush、VPS管理側 `review_notice_preflight.ps1` の実行、baseline照合が済むまで `ready_for_review` にしない。
+- 実施日: 2026-10-04 JST。本noticeは `status: draft` のまま。
+- 確認できた項目:
+  - source `78431bb`（コード変更）は実remoteの `main` へpush済み。通知書commit `f80973d` も同じ `main` に載り、local HEADと `git ls-remote` の結果が一致した。
+  - 配布対象（`deploy-files.txt` の5file）のうち、baseline想定 `c1c0505` からの変更は `coop_api_server.py` と `fetch_coop_mail.py` の2fileのみ。`c1c0505..78431bb` の他の差分は `ops/`・`API_SPEC.md`・`CLAUDE.md`・testで、配布対象外。依存・認証・bind・cron・env変数名は不変。
+  - 追跡対象のworking treeには、配布物に入らないローカル変更（`.gitignore` へのローカル設定file除外1行）がある。未追跡の `AGENTS.md` は既存で配布一覧に含まれない。
+  - ローカルのpytestは86 passed（2 skipped）。秘密値・IP・URLの混入なし（通知書と差分を走査）。
+- **未実施**: VPS管理側の `tools/review_notice_preflight.ps1`。この環境のPowerShell 5.1では構文エラー（BOMなしUTF-8）となり、BOM付きの一時copyでも .NET Core専用のAPI（`Path.GetRelativePath`）で停止した。PowerShell 7が必要と思われる。VPS管理側での実行を依頼する。
+- 実施していない確認: production baseline（commit）の照合（未解決事項1）、POSIXでのfile mode・group、実Gmailでの過去分取込。
 
 ## 未解決事項
 
