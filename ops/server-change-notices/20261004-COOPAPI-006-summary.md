@@ -132,7 +132,7 @@ server_impact: approval_required
 - `release_commits`: baseline `c1c0505` から `source_commit` までの全11commitを記載した。初回に `c59b82d`（通知005のB01再提出）を含め、中間の通知書commitを記載していなかった。配布対象のコード変更は `78431bb`・`684d77e`・`6fa666f` の3commit（`coop_api_server.py` と `fetch_coop_mail.py`）のみで、他は `ops/`・文書・test・`.gitignore` の変更。
 - 過去分取込CLIの終了コード（`6fa666f`）: 失敗時に1を返す。cronの通常取込は変更しない。`fetch_coop_mail.py` とtestのみで、`coop_api_server.py`・依存・配布一覧・認証・data形式は不変。
 - 確認: pytest 95 passed（2 skipped）。
-- 本noticeの更新だけのcommitは `source_commit` の後ろに続く（通知書の最終commitが実remote mainになる）。
+- `source_commit` の後ろには、通知書の更新と `API_SPEC.md`（文書。配布対象外）への1行追記だけのcommitが続く。コード・test・配布対象fileの変更は含まない（`git diff 6fa666f..HEAD` のops以外の差分は `API_SPEC.md` のみ）。通知書の最終commitが実remote mainになる。
 - 以下は1回目の再提出（指摘: 部分取得失敗・履歴保存失敗の成功扱い）の記録。
 
 ### 再提出（2026-10-04 JST・1回目）の差分確認
