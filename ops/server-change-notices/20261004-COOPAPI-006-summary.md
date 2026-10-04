@@ -6,9 +6,9 @@ policy_bundle_version: 2026-09-04.1
 notice_id: 20261004-COOPAPI-006
 app: coop-api
 source_branch: main
-source_commit: 6fa666f63ac1887a02446bab8b86b1f44a8dd47c
+source_commit: 91412f2468e3248d9ae00332058cad8ee0744895
 production_baseline_commit: c1c0505d88f904529a2e1dafe1066aad6c360430
-release_commits: c59b82d610d7289e14b903e872d17b9dbf8b31aa, cab577a204d63813f92631be51f348965dffa276, e21e1d3c84413bd21cc4fee92276ab4644f777b1, 78431bbebb8fe170d6eb4f50478496fb29817bc8, f80973d82c6ecf7f3cce51c70f1cbd87213861c7, ee1ccb48aa93a7d6ae80535fc422dd5455f97a51, 476d5548f4c3e0a7306e7b518aee873cdcd7be4d, 843487a28059441c1fc76a17c870fc4d614889e6, 684d77e84b58bbcb80db95b9beb54917dfd64ad2, 0ea1fa053803ecb64f74f2aca61e4b45fc9f822c, 6fa666f63ac1887a02446bab8b86b1f44a8dd47c
+release_commits: c59b82d610d7289e14b903e872d17b9dbf8b31aa, cab577a204d63813f92631be51f348965dffa276, e21e1d3c84413bd21cc4fee92276ab4644f777b1, 78431bbebb8fe170d6eb4f50478496fb29817bc8, f80973d82c6ecf7f3cce51c70f1cbd87213861c7, ee1ccb48aa93a7d6ae80535fc422dd5455f97a51, 476d5548f4c3e0a7306e7b518aee873cdcd7be4d, 843487a28059441c1fc76a17c870fc4d614889e6, 684d77e84b58bbcb80db95b9beb54917dfd64ad2, 0ea1fa053803ecb64f74f2aca61e4b45fc9f822c, 6fa666f63ac1887a02446bab8b86b1f44a8dd47c, b22cf8ed1c93683d2a01b462b38b54d6d86293b8, 22a7e431ecd883db7c78229b287e4c95f53088a5, 91412f2468e3248d9ae00332058cad8ee0744895
 impact_level: L3
 status: ready_for_review
 created_by: Claude
@@ -44,7 +44,19 @@ server_impact: approval_required
 | 通常取込（cron・`POST /api/coop/fetch`） | 最新1通の注文を処理 | 変更なし（履歴への追記だけ増える） |
 | 過去分取込 | なし | 手動CLIのみ（`--backfill-days N`）。cron・APIからは実行されない |
 | ジョブの成否（`job_end.status`） | 最新の注文確認メールを1通取れれば成功 | 通常取込の条件は不変。加えて、**注文履歴を保存できなかった場合（既存fileが読めない・書込失敗）は `failure`**。過去分取込は、**1通でも取得・解析に失敗したら `failure`**（取得できた分は保存済みで、再実行しても重複しない） |
-| 過去分取込CLIの終了コード | （該当なし） | `--backfill-days` は、一部取得失敗・履歴保存失敗・別の取込が実行中の場合に**終了コード1**（`job_end` の `status` と同じ判定）。成功は0、`--backfill-days` が1未満は2（引数エラー）。cronの通常取込の終了コードは**変更しない**（失敗でも従来どおり0。成否は `job_end` で判別する） |
+| 過去分取込CLIの終了コード | （該当なし） | `--backfill-days` は、取込が完了しなかった場合に**終了コード1**。成功は0、`--backfill-days` が1未満は2（引数エラー）。cronの通常取込の終了コードは**変更しない**（失敗でも従来どおり0。成否は `job_end` で判別する）。下表のとおり、終了コード1でもログの記録は2通りに分かれる |
+
+過去分取込（`--backfill-days`）の結果ごとの、終了コードとログの対応:
+
+| 状況 | 終了コード | `job_end.status` | 主なログ event | 意味・対応 |
+|---|---|---|---|---|
+| 全件を取得し、履歴を保存できた | 0 | `success` | `results_saved` | 完了 |
+| 一部のメールの取得・解析に失敗した | 1 | `failure` | `external_call_failed`、`results_saved`（取得済み分） | 障害。取得済みの分は保存済み。原因解消後に同じコマンドを再実行（重複しない） |
+| 履歴が読めない・書込に失敗した | 1 | `failure` | `results_save_failed`（`reason=history_unreadable` または `history_write_failed`） | 障害。履歴fileの状態を確認し、backupまたは再実行で復旧 |
+| **別の取込（cronまたは手動）が実行中（busy）** | **1** | **`success`**（`job_failed` は出ない） | `import_lock`（`result=busy`）、`import_skipped`（`reason=locked`） | **障害ではなく「未実行」**。Gmailへ接続せず、何も保存しない。cronの扱い（busyはskipしてsuccess）と同じ。しばらくして再実行する |
+| Gmail認証・接続などの失敗（取得処理が異常終了） | 1 | `failure` | `external_call_failed` | 障害。履歴は変更しない |
+
+**終了コード1だけで障害と判断しない。** busyは、終了コードは1だがログは `import_skipped` と `job_end(success)` になるため、ログの `import_skipped`（`reason=locked`）で未実行と判別する。この違いは、人が実行した過去分取込が行われていないことを呼び出し元（実行者）へ知らせる終了コードと、障害を検知する監視用のログとで、目的が異なるために生じている。
 | 履歴の書込失敗時の最新注文 | （該当なし） | 最新注文（`coop_latest.json`）の更新は続ける。履歴の失敗でジョブが中断し、最新注文が更新されなくなることはない |
 
 ## 影響対象
@@ -55,7 +67,7 @@ server_impact: approval_required
 - dependency: 変更なし（`requirements.txt` は不変）
 - data/DB/volume: `data/coop_orders.json` の追記化。新しいfile・directoryは作らない。1注文あたり数KB想定（実測は未実施）
 - log/monitoring: 過去分取込のjob名は `coop-mail-backfill`（既存の `job_start` / `job_end` 規約に従う）。通常取込の `coop-mail-import` は不変。`results_saved`（`target=coop_orders`）に `added_count` を追加。履歴を保存できない場合は `results_save_failed` をerrorで記録する（`reason=history_unreadable`＝既存fileが読めない、`reason=history_write_failed`＝書込失敗。後者は `error_class` を伴う）。同じrunの `job_end` は `status=failure`、level=error になる。商品名・本文は出力しない
-- 過去分取込の本番実行で終了コードが1の場合は、`job_end` の `status=failure` と `external_call_failed` / `results_save_failed` のログで原因を確認し、解消後に同じコマンドを再実行する（重複しない）
+- 過去分取込の本番実行で終了コードが1の場合は、まず `job_end` の `status` と `import_skipped` の有無を確認する。`status=failure` なら `external_call_failed` / `results_save_failed` で原因を確認して同じコマンドを再実行する（重複しない）。`import_skipped`（`reason=locked`）と `status=success` の組はbusyによる未実行で、障害ではない（上の対応表）
 - `POST /api/coop/fetch` の応答は変更しない（取得した注文件数を返す）。履歴の保存失敗はAPI応答ではなく、ログの `results_save_failed` と `job_end` で判別する
 - 配布対象: `coop_api_server.py`、`fetch_coop_mail.py`（`deploy-files.txt` の5file中、変更は2file）。`.env`、`data/`、test、通知書は配布対象外
 
@@ -102,6 +114,7 @@ server_impact: approval_required
 - health contract変更: なし
 - 実施テスト（ローカル、合成データのみ）: `pytest`（95 passed、POSIX所有検証2 skipped）。追加した主なテスト:
   - 過去分取込CLIの終了コード（一部取得失敗・履歴保存失敗・別の取込が実行中で1、成功で0、日数不正で2）と、cronの通常取込の終了コードが変わらないこと（修正前のコードでは3件が失敗することを確認済み）
+  - busy時は、終了コード1でありながら、ログは `import_lock`（`result=busy`）・`import_skipped`（`reason=locked`）・`job_end`（`status=success`、job=`coop-mail-backfill`）で、`job_failed` は出ず、Gmailへ接続せず、何も保存しないこと
   - 過去分取込の一部取得失敗が `job_end=failure` になり、取得済みの分は保存され、失敗解消後の再実行は成功して重複しないこと
   - 履歴が読めない場合・書込に失敗した場合に `job_end=failure` となり、最新注文は更新されること（修正前のコードでは3件が失敗することを確認済み）
   - 通常取込は、従来どおり最新の注文確認メールが取れれば成功すること
@@ -123,6 +136,16 @@ server_impact: approval_required
 - secret/個人情報対策: 商品名・メール本文・件名・送信者をlogへ出さない（既存規約のまま）
 
 ## 提出前セルフチェック
+
+### 再提出3回目（2026-10-04 JST）の差分確認
+
+3回目のVPS管理側レビューの残件（busy時の挙動の説明）への対応。前回review対象: `22a7e43`（実remote main）。baseline・`release_commits`・前回の指摘の解消は確認済み。
+
+- 挙動は変更していない。busy時は終了コード1だが、ログは `import_skipped`（`reason=locked`）と `job_end(status=success)` になる。この違いを、上の「現在と変更後」の対応表、Log・監視、テストに明記した。
+- コード変更なし（`fetch_coop_mail.py` はコメントのみ、testは検証の追加）。配布対象fileの動作は不変。
+- `source_commit`: `91412f2`。`release_commits` は baseline `c1c0505` から `91412f2` までの全14commit（`git rev-list` で機械的に取得。前回の11commitに `b22cf8e`・`22a7e43`・`91412f2` が加わる）。
+- 確認: pytest 95 passed（2 skipped。busyのテストは既存のものを、終了コードとログの両方を検証する内容に置き換えたため件数は同じ）。
+- `source_commit` の後ろには、通知書の更新と、`API_SPEC.md`（文書。配布対象外）のbusy時の説明の訂正だけのcommitが続く。コード・test・配布対象fileの変更は含まない（`git diff 91412f2..HEAD` のops以外の差分は `API_SPEC.md` のみ）。通知書の最終commitが実remote mainになる。
 
 ### 再提出2回目（2026-10-04 JST）の差分確認
 
@@ -181,6 +204,6 @@ VPS管理レビュー後に別途調整。急がない。
 ## Approval
 
 - app owner: 初回提出後、指摘（部分取得失敗・履歴保存失敗の成功扱い）を修正して再提出
-- VPS management review: 初回は `blocked`（2026-10-04）。2回目でコード指摘2点は解消確認、残件3点（baseline欄・release_commits・CLI終了コード）を今回修正。再reviewは未実施
+- VPS management review: 初回は `blocked`（2026-10-04）。2回目でコード指摘2点は解消確認、3回目でbaseline・release_commits・前回指摘の解消を確認し、残件はbusy時の挙動の説明のみ（今回、通知書・テスト・文書に明記）。再reviewは未実施
 - production approval: 未実施
 - related task_id: なし（ユーザー指示によるClaude直接実装）
