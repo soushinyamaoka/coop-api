@@ -27,3 +27,4 @@ Desktop.ini
 # ChatGPT Work / AIファイル受け渡し
 /work/ai_handoff/
 .pytest_cache/
+.claude/settings.local.json
