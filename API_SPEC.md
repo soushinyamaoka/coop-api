@@ -96,7 +96,7 @@
 
 `items` は `include_items=true` の時だけ含まれる。金額は注文メールから抽出していないため含まない。
 
-**過去分の取り込み（手動実行）**: `python fetch_coop_mail.py --backfill-days 365` で、指定日数内の注文確認メールを全件取り込み注文履歴にだけ追記する（`coop_latest.json` は更新しない、分類はキーワード判定のみでJevを呼ばない、ログの job 名は `coop-mail-backfill`）。production での実行は VPS管理側の手順に従う。
+**過去分の取り込み（手動実行）**: `python fetch_coop_mail.py --backfill-days 365` で、指定日数内の注文確認メールを全件取り込み注文履歴にだけ追記する（`coop_latest.json` は更新しない、分類はキーワード判定のみでJevを呼ばない、ログの job 名は `coop-mail-backfill`）。一部取得失敗・履歴保存失敗・別の取込が実行中の場合は終了コード1（`job_end` の `status=failure` と同じ判定。取得済みの分は保存され、再実行しても重複しない）。production での実行は VPS管理側の手順に従う。
 
 ---
 

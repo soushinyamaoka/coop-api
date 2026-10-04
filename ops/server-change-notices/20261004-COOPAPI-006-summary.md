@@ -6,9 +6,9 @@ policy_bundle_version: 2026-09-04.1
 notice_id: 20261004-COOPAPI-006
 app: coop-api
 source_branch: main
-source_commit: 684d77e84b58bbcb80db95b9beb54917dfd64ad2
-production_baseline_commit: c1c0505d88f904529a2e1dafe1066aad6c360430   # VPS1の稼働hashからVPS管理が確認（2026-10-04）
-release_commits: 78431bbebb8fe170d6eb4f50478496fb29817bc8, 684d77e84b58bbcb80db95b9beb54917dfd64ad2
+source_commit: 6fa666f63ac1887a02446bab8b86b1f44a8dd47c
+production_baseline_commit: c1c0505d88f904529a2e1dafe1066aad6c360430
+release_commits: c59b82d610d7289e14b903e872d17b9dbf8b31aa, cab577a204d63813f92631be51f348965dffa276, e21e1d3c84413bd21cc4fee92276ab4644f777b1, 78431bbebb8fe170d6eb4f50478496fb29817bc8, f80973d82c6ecf7f3cce51c70f1cbd87213861c7, ee1ccb48aa93a7d6ae80535fc422dd5455f97a51, 476d5548f4c3e0a7306e7b518aee873cdcd7be4d, 843487a28059441c1fc76a17c870fc4d614889e6, 684d77e84b58bbcb80db95b9beb54917dfd64ad2, 0ea1fa053803ecb64f74f2aca61e4b45fc9f822c, 6fa666f63ac1887a02446bab8b86b1f44a8dd47c
 impact_level: L3
 status: ready_for_review
 created_by: Claude
@@ -44,6 +44,7 @@ server_impact: approval_required
 | 通常取込（cron・`POST /api/coop/fetch`） | 最新1通の注文を処理 | 変更なし（履歴への追記だけ増える） |
 | 過去分取込 | なし | 手動CLIのみ（`--backfill-days N`）。cron・APIからは実行されない |
 | ジョブの成否（`job_end.status`） | 最新の注文確認メールを1通取れれば成功 | 通常取込の条件は不変。加えて、**注文履歴を保存できなかった場合（既存fileが読めない・書込失敗）は `failure`**。過去分取込は、**1通でも取得・解析に失敗したら `failure`**（取得できた分は保存済みで、再実行しても重複しない） |
+| 過去分取込CLIの終了コード | （該当なし） | `--backfill-days` は、一部取得失敗・履歴保存失敗・別の取込が実行中の場合に**終了コード1**（`job_end` の `status` と同じ判定）。成功は0、`--backfill-days` が1未満は2（引数エラー）。cronの通常取込の終了コードは**変更しない**（失敗でも従来どおり0。成否は `job_end` で判別する） |
 | 履歴の書込失敗時の最新注文 | （該当なし） | 最新注文（`coop_latest.json`）の更新は続ける。履歴の失敗でジョブが中断し、最新注文が更新されなくなることはない |
 
 ## 影響対象
@@ -54,6 +55,7 @@ server_impact: approval_required
 - dependency: 変更なし（`requirements.txt` は不変）
 - data/DB/volume: `data/coop_orders.json` の追記化。新しいfile・directoryは作らない。1注文あたり数KB想定（実測は未実施）
 - log/monitoring: 過去分取込のjob名は `coop-mail-backfill`（既存の `job_start` / `job_end` 規約に従う）。通常取込の `coop-mail-import` は不変。`results_saved`（`target=coop_orders`）に `added_count` を追加。履歴を保存できない場合は `results_save_failed` をerrorで記録する（`reason=history_unreadable`＝既存fileが読めない、`reason=history_write_failed`＝書込失敗。後者は `error_class` を伴う）。同じrunの `job_end` は `status=failure`、level=error になる。商品名・本文は出力しない
+- 過去分取込の本番実行で終了コードが1の場合は、`job_end` の `status=failure` と `external_call_failed` / `results_save_failed` のログで原因を確認し、解消後に同じコマンドを再実行する（重複しない）
 - `POST /api/coop/fetch` の応答は変更しない（取得した注文件数を返す）。履歴の保存失敗はAPI応答ではなく、ログの `results_save_failed` と `job_end` で判別する
 - 配布対象: `coop_api_server.py`、`fetch_coop_mail.py`（`deploy-files.txt` の5file中、変更は2file）。`.env`、`data/`、test、通知書は配布対象外
 
@@ -98,7 +100,8 @@ server_impact: approval_required
 ## Health・テスト
 
 - health contract変更: なし
-- 実施テスト（ローカル、合成データのみ）: `pytest`（90 passed、POSIX所有検証2 skipped）。追加した主なテスト:
+- 実施テスト（ローカル、合成データのみ）: `pytest`（95 passed、POSIX所有検証2 skipped）。追加した主なテスト:
+  - 過去分取込CLIの終了コード（一部取得失敗・履歴保存失敗・別の取込が実行中で1、成功で0、日数不正で2）と、cronの通常取込の終了コードが変わらないこと（修正前のコードでは3件が失敗することを確認済み）
   - 過去分取込の一部取得失敗が `job_end=failure` になり、取得済みの分は保存され、失敗解消後の再実行は成功して重複しないこと
   - 履歴が読めない場合・書込に失敗した場合に `job_end=failure` となり、最新注文は更新されること（修正前のコードでは3件が失敗することを確認済み）
   - 通常取込は、従来どおり最新の注文確認メールが取れれば成功すること
@@ -121,7 +124,18 @@ server_impact: approval_required
 
 ## 提出前セルフチェック
 
-### 再提出（2026-10-04 JST）の差分確認
+### 再提出2回目（2026-10-04 JST）の差分確認
+
+2回目のVPS管理側レビューの残件3点への対応。前回review対象: `0ea1fa0`（実remote main）。コードの前回review済み範囲は `684d77e`。
+
+- baseline欄: SHA単体にした（説明コメントを削除）。
+- `release_commits`: baseline `c1c0505` から `source_commit` までの全11commitを記載した。初回に `c59b82d`（通知005のB01再提出）を含め、中間の通知書commitを記載していなかった。配布対象のコード変更は `78431bb`・`684d77e`・`6fa666f` の3commit（`coop_api_server.py` と `fetch_coop_mail.py`）のみで、他は `ops/`・文書・test・`.gitignore` の変更。
+- 過去分取込CLIの終了コード（`6fa666f`）: 失敗時に1を返す。cronの通常取込は変更しない。`fetch_coop_mail.py` とtestのみで、`coop_api_server.py`・依存・配布一覧・認証・data形式は不変。
+- 確認: pytest 95 passed（2 skipped）。
+- 本noticeの更新だけのcommitは `source_commit` の後ろに続く（通知書の最終commitが実remote mainになる）。
+- 以下は1回目の再提出（指摘: 部分取得失敗・履歴保存失敗の成功扱い）の記録。
+
+### 再提出（2026-10-04 JST・1回目）の差分確認
 
 初回提出（draft・source `78431bb`）に対するVPS管理側レビュー（受理台帳 `blocked`）の指摘を受けた再提出。前回review対象commit: `843487a`（通知書の最終commit。コードは `78431bb`）。
 
@@ -167,6 +181,6 @@ VPS管理レビュー後に別途調整。急がない。
 ## Approval
 
 - app owner: 初回提出後、指摘（部分取得失敗・履歴保存失敗の成功扱い）を修正して再提出
-- VPS management review: 初回は `blocked`（2026-10-04）。再reviewは未実施
+- VPS management review: 初回は `blocked`（2026-10-04）。2回目でコード指摘2点は解消確認、残件3点（baseline欄・release_commits・CLI終了コード）を今回修正。再reviewは未実施
 - production approval: 未実施
 - related task_id: なし（ユーザー指示によるClaude直接実装）
