@@ -138,9 +138,27 @@ server_impact: approval_required
 - 前回の指摘（成否・未実行の分岐の説明、baseline欄はSHA単体、release_commitsは全commit）を踏まえ、日付と金額の決まり方を、結果ごとの表にした。
 - VPS管理側の `review_notice_preflight.ps1` は、アプリ側のPowerShell 5.1では実行できない（通知006と同じ）。VPS管理側での実行をお願いしたい。
 
+## 残存注文の扱い（app owner決定・2026-10-05）
+
+VPS管理のレビューで、本番に**旧形式（受信日で保存）の注文が1件残っている**こと、同じメールの再取込で重複するリスクが指摘された（技術受理済み、本番反映は本件が決まるまで保留）。app ownerは、**コードは変えず、反映前にVPS管理側で残存注文を除去する方針**（案A）に決定した。本noticeのsource・release_commitsは変更しない。
+
+反映手順の案（実施の可否・順序・方法はVPS管理側が決める。本番データの作業はVPS管理側の承認と実施による）:
+
+1. 反映前に、`coop_orders.json` と `coop_latest.json` のbackupを取り、読み取れることを確認する。
+2. `coop_orders.json` の旧形式のエントリ1件を除去する（ファイルは有効なJSON `orders` 配列を保つ。除去後の件数は0）。**`coop_latest.json` は、この時点では触らない**（アプリが現在の最新注文を表示し続けるため）。
+3. 通知007のartifactを反映し、service再起動と、health・認証境界を確認する。
+4. 反映後、**1回、手動取得（`POST /api/coop/fetch`）を実行する**。cronは、最新注文と同じ内容の注文を「同一注文」として取込を飛ばすため、手動取得をしないと、最新注文は次の新しい注文メールまで旧形式のまま残る。手動取得は、同一注文でも再取込するため、最新注文が新形式になり、履歴に新形式の1件が追加される（旧エントリを除去済みなので重複しない）。
+5. 確認: `GET /api/coop/orders` の最新の注文で `order_date_source` が `delivery_schedule`、`order_date` が本文の配達予定日と一致すること。`order_date_source` が `email_date` の場合は、配達予定日が読めていない（書式の違い等）。実際の日付・金額・商品名を、ログ・記録へ貼らない。
+
+注意:
+- 手順4の手動取得は、既定で直近14日のメールを探す。対象の注文メールの受信（2026-09-30）から14日を過ぎる場合は、`days_back` を大きくする（API上限90日）。
+- 手順2を省くと、手順4で、同じ注文が旧日付と新日付の2件並ぶ。
+- 履歴が空になっても、アプリの「過去の注文」は「注文履歴はまだありません」と表示するだけで、壊れない。
+- 恒久的な重複防止（重複判定を注文日に依存させない変更）は、今回は行わない。日付の基準を再び変える場合は、改めて検討する。
+
 ## 未解決事項
 
-1. **production baselineの稼働hashが未確認**。`production_deployments.yaml` の `coop-api` は `f26c211`（2026-08-30）のまま更新されていない。通知006はVPS管理がproduction反映したと報告を受けたが、反映したsourceの稼働hashはこちらでは確認できていない。`production_baseline_commit` は006の `source_commit` とした。確定はVPS管理側でお願いしたい。
+1. **production baselineの稼働hashが未確認**（※VPS管理側が照合を完了したと報告済み）。`production_deployments.yaml` の `coop-api` は `f26c211`（2026-08-30）のまま更新されていない。通知006はVPS管理がproduction反映したと報告を受けたが、反映したsourceの稼働hashはこちらでは確認できていない。`production_baseline_commit` は006の `source_commit` とした。確定はVPS管理側でお願いしたい。
 2. **注文履歴・最新注文の現在の中身**（上記「Data」）の確認と、反映前のbackup確認。
 3. メール本文の書式変更時の代用（`email_date`）を検知する方法（監視に加えるか）の判断。
 4. アプリ（`20261005-013` で実装済み）の端末配信は、本noticeのproduction反映・確認の後に、app ownerが別途判断する。
