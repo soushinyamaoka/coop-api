@@ -67,11 +67,11 @@ data:
         書込方式は同一pathへの直接書込で一時fileは作らない（原子的置換ではない）。既存fileが読めない場合は上書きせず履歴保存をskipし、
         job_endをfailureにする。注文ごとに単調増加し、失うと過去注文を再取得できない場合がある（--backfill-daysでGmailに残る範囲は再取込可能）。
         過去分取込の本番実行は、反映後の別作業として未実施（2026-10-04時点）。rollback時は、旧コードが履歴を1件へ上書きするため、先にこのfileを退避する。
-        次回変更（本taskのローカル実装、production未反映）では order_date をメール本文の翌週商品配達予定日にし、order_date_source と税抜・税込合計金額を追加する。既存データの移行は不要。
+        2026-10-05のnotice 20261005-COOPAPI-007のproduction反映後（VPS管理の報告）は、order_date はメール本文の翌週商品配達予定日（読めない場合は受信日、日本時間）で、order_date_source と本体・税込の合計金額が追加されている。反映時に、旧形式（受信日で保存）の注文履歴はVPS管理側で整理され、手動取得後の最新注文で order_date_source=delivery_schedule が確認されている。既存データの移行は行わない。
     - path: /opt/apps/coop-api/data/coop_latest.json
       backup_required: true
       regenerable: false
-      note: 最新1件の派生ファイル（coop_orders.jsonから再生成可能だが、直近の在庫計算がこのfileに依存するため運用上はbackup対象）。次回変更（本taskのローカル実装、production未反映）では order_date の意味を配達予定日にし、order_date_source と税抜・税込合計金額を追加する。
+      note: 最新1件の派生ファイル（coop_orders.jsonから再生成可能だが、直近の在庫計算がこのfileに依存するため運用上はbackup対象）。2026-10-05のnotice 20261005-COOPAPI-007の反映後は、order_date の意味が配達予定日で、order_date_source と本体・税込の合計金額を含む（手動取得後の最新注文で確認済み。VPS管理の報告）。
     - path: /opt/apps/coop-api/data/category_overrides.json
       backup_required: true
       regenerable: false
