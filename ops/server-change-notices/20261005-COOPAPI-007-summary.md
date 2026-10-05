@@ -101,7 +101,7 @@ server_impact: approval_required
 
 ## Deploy・rollback
 
-- deploy前提: 通知006（注文履歴化）が反映済みであること。baselineは006のsource `91412f2`（VPS管理の報告で反映済み。稼働hashの照合は未確認）
+- deploy前提: 通知006（注文履歴化）が反映済みであること。baselineは006のsource `91412f2`。VPS管理側が、VPS1の稼働hashとの照合を完了している（2026-10-05のレビューで確認）
 - deploy手順の変更: なし（共通deploy経路・`USE_VENV=yes`）
 - rollback方法（artifact）: 旧artifactの3fileを再配置しservice再起動
 - **rollbackに関する注意（data）**: rollbackしても、保存済みのエントリの新しい3項目は残る（旧コードは無視するだけ）。ただし旧コードは、受信日で `order_date` を付ける。そのため、rollback後に同じメールが再取込されると、新規則で保存済みのエントリ（配達予定日）と、旧規則の新エントリ（受信日）が、**別の注文として2件並ぶ**。rollback後に過去分取込（`--backfill-days`）を実行する場合は、この点に注意する。
@@ -136,7 +136,7 @@ server_impact: approval_required
 - baseline `91412f2` から `source_commit` までの全3commitを `git rev-list` で取得し、`release_commits` に記載した。`91412f2..c94f8a0` のops以外の差分は、配布対象の `coop_parser.py`・`coop_api_server.py`・`fetch_coop_mail.py` と、文書・test（`API_SPEC.md`・`CLAUDE.md`・`tests/`）。`jev_classifier.py`・`requirements.txt`・`deploy-files.txt` は変更なし。依存・認証・bind・cron・env変数名・lock・ジョブの成否判定は不変。
 - 配布物に `.env`・`data/`・一時file・実メールの内容が入らないこと、通知書とコミットに実際の金額・番号・URLが無いことを確認した。
 - 前回の指摘（成否・未実行の分岐の説明、baseline欄はSHA単体、release_commitsは全commit）を踏まえ、日付と金額の決まり方を、結果ごとの表にした。
-- VPS管理側の `review_notice_preflight.ps1` は、アプリ側のPowerShell 5.1では実行できない（通知006と同じ）。VPS管理側での実行をお願いしたい。
+- VPS管理側の `review_notice_preflight.ps1` は、アプリ側のPowerShell 5.1では実行できなかった（通知006と同じ）。VPS管理側が実行し、blockerなしと報告を受けた（2026-10-05）。
 
 ## 残存注文の扱い（app owner決定・2026-10-05）
 
@@ -186,7 +186,7 @@ VPS管理のレビューで、本番に**旧形式（受信日で保存）の注
 
 ## 未解決事項
 
-1. **production baselineの稼働hashが未確認**（※VPS管理側が照合を完了したと報告済み）。`production_deployments.yaml` の `coop-api` は `f26c211`（2026-08-30）のまま更新されていない。通知006はVPS管理がproduction反映したと報告を受けたが、反映したsourceの稼働hashはこちらでは確認できていない。`production_baseline_commit` は006の `source_commit` とした。確定はVPS管理側でお願いしたい。
+1. （解消）production baselineの稼働hashは、VPS管理側が照合を完了し、`production_baseline_commit` は006の `source_commit` `91412f2` で確定した（2026-10-05のレビュー）。なお、VPS管理側の `production_deployments.yaml` の `coop-api` の記載（`f26c211`、2026-08-30）が古いままの場合の更新は、VPS管理側の作業。
 2. **注文履歴・最新注文の現在の中身**（上記「Data」）の確認と、反映前のbackup確認。
 3. メール本文の書式変更時の代用（`email_date`）を検知する方法（監視に加えるか）の判断。
 4. アプリ（`20261005-013` で実装済み）の端末配信は、本noticeのproduction反映・確認の後に、app ownerが別途判断する。
@@ -198,12 +198,12 @@ VPS管理レビュー後に別途調整。
 ## VPS管理チャットへの引き継ぎ
 
 - 引き継ぎ要否: 必要
-- ユーザーへの案内: 提出前セルフチェックまで完了（preflightのみVPS管理側）
+- ユーザーへの案内: 技術レビュー受理・台帳登録済み（2026-10-05）。増分（残存注文の除去・データのrollback手順・所有者と権限の維持）も受理済み。本番反映・データ操作・端末配信は別承認
 - VPS管理チャットへ渡すローカル絶対path: C:\work\PRG\HomeTools\meal-planner\api\coop-api\ops\server-change-notices\20261005-COOPAPI-007-summary.md
 
 ## Approval
 
-- app owner: 実装提出（初回）
-- VPS management review: 未実施
-- production approval: 未実施
+- app owner: 実装提出。残存注文の扱いは案A（反映前にVPS管理が除去）と決定（2026-10-05）
+- VPS management review: 技術レビュー受理・台帳登録（2026-10-05）。残存注文の扱い（案A）の改訂は、データのrollback手順と所有者・権限の維持の追記後に、増分レビュー受理（2026-10-05。実remote main `c31c948` 一致を確認）。baseline `91412f2` の稼働hash照合・preflightは完了
+- production approval: 未実施（本番反映・データ操作・端末配信は別承認）
 - related task_id: 20261005-014（Codex実装、Claudeがレビュー・commit）
