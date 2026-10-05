@@ -53,7 +53,8 @@ config:
     notice 20260930-COOPAPI-005の分類override原子的保存と専用一時directoryは、VPS管理が2026-10-04にVPS1の稼働hashを
     c1c0505と確認した結果から、反映済みとして扱う（稼働状態の正本はVPS管理側の記録）。
     notice 20261004-COOPAPI-006（注文履歴の追記化）は、VPS管理の報告（2026-10-04）でproduction反映済み。
-    API・認証境界・注文データ保持が確認されている。過去分取込（--backfill-days）の本番実行は未実施。
+    API・認証境界・注文データ保持が確認されている。過去分取込（--backfill-days）は、VPS管理の報告（2026-10-05）で
+    265日分を本番実行済み（履歴22件、重複なし、最新注文 coop_latest.json は変更なし）。
 
 data:
   databases: []
@@ -66,7 +67,7 @@ data:
         （反映前は取込ごとに orders 配列（通常1件）で上書きされ、蓄積されなかった）。2026-09-27にsource_fingerprint項目を追加（既存データの移行不要）。
         書込方式は同一pathへの直接書込で一時fileは作らない（原子的置換ではない）。既存fileが読めない場合は上書きせず履歴保存をskipし、
         job_endをfailureにする。注文ごとに単調増加し、失うと過去注文を再取得できない場合がある（--backfill-daysでGmailに残る範囲は再取込可能）。
-        過去分取込の本番実行は、反映後の別作業として未実施（2026-10-04時点）。rollback時は、旧コードが履歴を1件へ上書きするため、先にこのfileを退避する。
+        過去分取込（--backfill-days 265相当）は、2026-10-05にVPS管理が本番実行済み（履歴22件、重複なし。過去分の分類はキーワード判定のみ）。rollback時は、旧コードが履歴を1件へ上書きするため、先にこのfileを退避する。
         2026-10-05のnotice 20261005-COOPAPI-007のproduction反映後（VPS管理の報告）は、order_date はメール本文の翌週商品配達予定日（読めない場合は受信日、日本時間）で、order_date_source と本体・税込の合計金額が追加されている。反映時に、旧形式（受信日で保存）の注文履歴はVPS管理側で整理され、手動取得後の最新注文で order_date_source=delivery_schedule が確認されている。既存データの移行は行わない。
     - path: /opt/apps/coop-api/data/coop_latest.json
       backup_required: true
