@@ -203,6 +203,8 @@ API_TOKEN=<任意のトークン>
 - `X-GM-RAW "coopdeli"` で検索（転送メールでも本文にcoopdeliが含まれるためヒット）
 - 通常取込は新しい順に最大5通を確認し、最初に見つかった注文確認メール1通のみ処理する
 - 注文は `coop_orders.json` に追記され履歴として残る（注文日＋`source_fingerprint` で重複除外）。`coop_latest.json` は最新1件
+- `order_date` は注文確認メール本文の「翌週商品配達予定日」を優先し、読めない場合はメールDateヘッダーを日本時間（固定+09:00）へ変換した日付、ヘッダーも読めない場合は取込日。`order_date_source` は `delivery_schedule` / `email_date` / `import_time`。
+- 注文合計は明細前の「合計金額（本体）」と「合計金額（税込）」を整数円で保存し、読めない場合は `null`。APIの旧データでは日付ソース・金額項目は `null`。
 - `--backfill-days N` で過去分を全件取り込める（履歴のみ更新、キーワード分類のみ）
 
 ## よく使うコマンド

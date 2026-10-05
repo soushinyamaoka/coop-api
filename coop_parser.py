@@ -10,7 +10,7 @@ import re
 import json
 import hashlib
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 
 
 # ============================================================
@@ -32,6 +32,38 @@ ZENKAKU_TO_HANKAKU = str.maketrans(
 def zen_to_han(text: str) -> str:
     """全角数字・英字を半角に変換"""
     return text.translate(ZENKAKU_TO_HANKAKU)
+
+
+def extract_delivery_schedule_date(body: str, received_date: date) -> date | None:
+    """Read the scheduled delivery date, assigning the nearest plausible year."""
+    converted = zen_to_han(body).translate(str.maketrans({"：": ":", "（": "(", "）": ")"}))
+    match = re.search(
+        r"^\s*翌週商品配達予定日\s*:\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*(?:\(\s*[^)\r\n]*\s*\))?\s*$",
+        converted, re.MULTILINE,
+    )
+    if not match:
+        return None
+    month, day = map(int, match.groups())
+    candidates = []
+    for year in (received_date.year - 1, received_date.year, received_date.year + 1):
+        try:
+            candidates.append(date(year, month, day))
+        except ValueError:
+            pass
+    return min(candidates, key=lambda candidate: abs((candidate - received_date).days)) if candidates else None
+
+
+def extract_order_amounts(body: str) -> tuple[int | None, int | None]:
+    """Read the two total amount lines before order details."""
+    header = re.split(r"^\s*注文番号\s*[:：]", body, maxsplit=1, flags=re.MULTILINE)[0]
+    converted = zen_to_han(header).translate(str.maketrans({"，": ",", "：": ":", "（": "(", "）": ")"}))
+    def find_amount(kind: str) -> int | None:
+        match = re.search(
+            rf"合計金額\s*[（(]\s*{kind}\s*[）)]\s*[:：]\s*([\d,]+)\s*円",
+            converted,
+        )
+        return int(match.group(1).replace(",", "")) if match else None
+    return find_amount("本体"), find_amount("税込")
 
 
 # ============================================================

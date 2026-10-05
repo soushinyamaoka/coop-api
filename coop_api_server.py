@@ -373,6 +373,9 @@ def get_ingredients(authorization: str = Header(default="")):
 
     return {
         "order_date": order.get("order_date", ""),
+        "order_date_source": order.get("order_date_source"),
+        "total_amount_excluding_tax": order.get("total_amount_excluding_tax"),
+        "total_amount_tax_included": order.get("total_amount_tax_included"),
         "parsed_at": order.get("parsed_at", ""),
         **categorized,
         "excluded": order.get("excluded", []),
@@ -399,6 +402,9 @@ def get_orders(
     for order in sorted(orders, key=lambda o: o.get("order_date", ""), reverse=True):
         summary = {
             "order_date": order.get("order_date", ""),
+            "order_date_source": order.get("order_date_source"),
+            "total_amount_excluding_tax": order.get("total_amount_excluding_tax"),
+            "total_amount_tax_included": order.get("total_amount_tax_included"),
             "source_fingerprint": order.get("source_fingerprint", ""),
             "email_subject": order.get("email_subject", ""),
             "total_items": order.get("total_items", 0),

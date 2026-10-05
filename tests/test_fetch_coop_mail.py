@@ -251,6 +251,38 @@ def _order(order_date, fingerprint, name="しょうゆ"):
     }
 
 
+def test_resolve_order_metadata_delivery_fallback_and_japan_date():
+    delivery = "翌週商品配達予定日：９月３０日（水）\n合計金額(本体)：5,000円\n合計金額（税込）：５，４００円\n注文番号：1\n商品名：架空商品\n数量：1点"
+    assert fetch.resolve_order_metadata(delivery, "Wed, 30 Sep 2026 16:15:22 +0900") == {
+        "order_date": "2026-09-30", "order_date_source": "delivery_schedule",
+        "total_amount_excluding_tax": 5000, "total_amount_tax_included": 5400,
+    }
+    assert fetch.resolve_order_metadata("注文番号：1", "Wed, 30 Sep 2026 23:30:00 -0000")["order_date"] == "2026-10-01"
+    assert fetch.resolve_order_metadata("翌週商品配達予定日：2月30日", "Wed, 30 Sep 2026 16:15:22 +0900")["order_date_source"] == "email_date"
+    assert fetch.resolve_order_metadata("注文番号：1", "bad date", now=fetch.datetime(2026, 1, 2, 0, 0))["order_date_source"] == "import_time"
+
+
+def test_api_date_and_amount_fields_include_null_for_legacy(monkeypatch):
+    from pathlib import Path
+    with patch("dotenv.load_dotenv", return_value=False), patch.object(Path, "mkdir"):
+        import coop_api_server as server
+    monkeypatch.setattr(server, "verify_token", lambda _authorization: None)
+    legacy = _order("2026-09-30", "legacy")
+    monkeypatch.setattr(server, "load_latest_order", lambda: legacy)
+    monkeypatch.setattr(server, "load_all_orders", lambda: {"orders": [legacy]})
+    from fastapi.testclient import TestClient
+    client = TestClient(server.app)
+    expected = {"order_date_source": None, "total_amount_excluding_tax": None, "total_amount_tax_included": None}
+    assert {key: client.get("/api/coop/ingredients").json()[key] for key in expected} == expected
+    assert {key: client.get("/api/coop/orders").json()["orders"][0][key] for key in expected} == expected
+    current = {**legacy, "order_date_source": "delivery_schedule", "total_amount_excluding_tax": 5000, "total_amount_tax_included": 5400}
+    monkeypatch.setattr(server, "load_latest_order", lambda: current)
+    monkeypatch.setattr(server, "load_all_orders", lambda: {"orders": [current]})
+    current_fields = {key: value for key, value in current.items() if key in expected}
+    assert {key: client.get("/api/coop/ingredients").json()[key] for key in current_fields} == current_fields
+    assert {key: client.get("/api/coop/orders").json()["orders"][0][key] for key in current_fields} == current_fields
+
+
 def test_save_results_appends_history_without_duplicates(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     monkeypatch.setattr(fetch, "DATA_DIR", data_dir)
@@ -501,6 +533,9 @@ def test_orders_endpoint_returns_history_newest_first_with_items(monkeypatch, tm
     client = TestClient(server.app)
     summary = client.get("/api/coop/orders").json()
     assert [o["order_date"] for o in summary["orders"]] == ["2026-10-04", "2026-09-27"]
+    assert summary["orders"][0]["order_date_source"] is None
+    assert summary["orders"][0]["total_amount_excluding_tax"] is None
+    assert summary["orders"][0]["total_amount_tax_included"] is None
     assert "items" not in summary["orders"][0]
 
     detail = client.get("/api/coop/orders?include_items=true").json()

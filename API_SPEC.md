@@ -28,6 +28,9 @@
 ```json
 {
   "order_date": "2026-03-06",
+  "order_date_source": "delivery_schedule",
+  "total_amount_excluding_tax": 5000,
+  "total_amount_tax_included": 5400,
   "parsed_at": "2026-03-06T20:00:00",
   "ingredients": [
     {
@@ -48,6 +51,8 @@
   ]
 }
 ```
+
+`order_date` は注文確認メール本文の「翌週商品配達予定日」を優先し、読めない場合はメール受信日時を日本時間（+09:00）にした日付、Dateヘッダーも読めない場合は取込日。`order_date_source` はそれぞれ `delivery_schedule`、`email_date`、`import_time`。金額は本文の明細より前から抽出し、読めない場合は `null`。旧保存データでは新3項目は `null`。
 
 **カテゴリの種類**
 
@@ -81,6 +86,9 @@
   "orders": [
     {
       "order_date": "2026-03-06",
+      "order_date_source": "delivery_schedule",
+      "total_amount_excluding_tax": 5000,
+      "total_amount_tax_included": 5400,
       "source_fingerprint": "3f2a…",
       "email_subject": "eフレンズ注文済メモメール",
       "total_items": 12,
@@ -94,7 +102,7 @@
 }
 ```
 
-`items` は `include_items=true` の時だけ含まれる。金額は注文メールから抽出していないため含まない。
+`items` は `include_items=true` の時だけ含まれる。日付・金額の新項目は旧保存データでは `null`。
 
 **過去分の取り込み（手動実行）**: `python fetch_coop_mail.py --backfill-days 365` で、指定日数内の注文確認メールを全件取り込み注文履歴にだけ追記する（`coop_latest.json` は更新しない、分類はキーワード判定のみでJevを呼ばない、ログの job 名は `coop-mail-backfill`）。取込が完了しなかった場合は終了コード1。一部取得失敗・履歴保存失敗・取得処理の異常終了は `job_end` の `status=failure`（取得済みの分は保存され、再実行しても重複しない）。別の取込が実行中の場合も終了コード1だが障害ではなく、ログは `import_skipped`（`reason=locked`）と `job_end` の `status=success` になる（未実行。終了コードだけで障害と判断しない）。production での実行は VPS管理側の手順に従う。
 

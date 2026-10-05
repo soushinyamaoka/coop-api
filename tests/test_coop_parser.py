@@ -1,9 +1,13 @@
+from datetime import date
+
 import pytest
 
 from coop_parser import (
     SAMPLE_EMAIL,
     _is_ingredient_set,
     classify_item,
+    extract_delivery_schedule_date,
+    extract_order_amounts,
     normalize_ingredient_name,
     parse_coop_email,
     source_fingerprint,
@@ -157,3 +161,33 @@ def test_fingerprint_ignores_row_order_and_surrounding_name_whitespace() -> None
 def test_fingerprint_changes_with_order_content(changed: str) -> None:
     original = "注文番号：1\n商品名：しょうゆ\n数量：1点"
     assert source_fingerprint(original) != source_fingerprint(changed)
+
+
+def test_delivery_date_and_amounts_from_synthetic_header():
+    body = """ご注文が完了しております。
+９月５回Ｄ週 のご注文内容
+注文締切日時：9月25日(金) 2:00
+翌週商品配達予定日：９月３０日（水）
+商品合計数：2点
+合計金額（本体）：5000円
+合計金額（税込）：5,400円
+注文番号：123
+商品名：合計金額を含む架空商品
+数量：1点"""
+    assert extract_delivery_schedule_date(body, date(2026, 9, 30)) == date(2026, 9, 30)
+    assert extract_order_amounts(body) == (5000, 5400)
+    assert extract_delivery_schedule_date("翌週商品配達予定日：9月30日", date(2026, 9, 30)) == date(2026, 9, 30)
+
+
+@pytest.mark.parametrize(("received", "md", "expected"), [
+    (date(2026, 12, 28), "1月4日", date(2027, 1, 4)),
+    (date(2027, 1, 2), "12月30日", date(2026, 12, 30)),
+    (date(2026, 10, 1), "9月30日", date(2026, 9, 30)),
+])
+def test_delivery_date_selects_nearest_year(received, md, expected):
+    assert extract_delivery_schedule_date(f"翌週商品配達予定日：{md}", received) == expected
+
+
+def test_invalid_delivery_date_and_missing_amounts_are_unreadable():
+    assert extract_delivery_schedule_date("翌週商品配達予定日：2月30日", date(2026, 2, 1)) is None
+    assert extract_order_amounts("注文番号：1\n商品名：合計金額 123円\n数量：1点") == (None, None)

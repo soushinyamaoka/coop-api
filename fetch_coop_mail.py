@@ -22,13 +22,15 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from coop_parser import (
     classify_item,
     extract_order_rows,
+    extract_delivery_schedule_date,
+    extract_order_amounts,
     extract_product_names,
     parse_coop_email,
     source_fingerprint,
@@ -121,6 +123,40 @@ def log_event(log: logging.Logger, level: int, event: str, **fields) -> None:
 configure_logging()
 logger = logging.getLogger(__name__)
 _warned_missing_jev_key = False
+
+
+def resolve_order_metadata(body: str, date_header: str, now: datetime | None = None) -> dict:
+    """Resolve delivery date, Japan-local email date fallback, and order amounts."""
+    japan_tz = timezone(timedelta(hours=9))
+    received_date = None
+    try:
+        from email.utils import parsedate_to_datetime
+        received = parsedate_to_datetime(date_header)
+        if received.tzinfo is None:
+            # RFC -0000 denotes UTC while parsedate_to_datetime represents it as naive.
+            assumed_tz = timezone.utc if date_header.rstrip().endswith("-0000") else japan_tz
+            received = received.replace(tzinfo=assumed_tz)
+        received_date = received.astimezone(japan_tz).date()
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+    delivery_date = extract_delivery_schedule_date(body, received_date) if received_date else None
+    excluding, included = extract_order_amounts(body)
+    if delivery_date:
+        order_date, source = delivery_date.isoformat(), "delivery_schedule"
+    elif received_date:
+        order_date, source = received_date.isoformat(), "email_date"
+    else:
+        current = now or datetime.now(japan_tz)
+        if current.tzinfo is not None:
+            current = current.astimezone(japan_tz)
+        order_date, source = current.date().isoformat(), "import_time"
+    return {
+        "order_date": order_date,
+        "order_date_source": source,
+        "total_amount_excluding_tax": excluding,
+        "total_amount_tax_included": included,
+    }
 
 
 class ImportBusyError(Exception):
@@ -427,13 +463,7 @@ def _fetch_coop_emails(
                 parsed["email_date"] = date_str
                 parsed["email_sender"] = sender
 
-                # 注文日を推定（メール日付を使用）
-                try:
-                    from email.utils import parsedate_to_datetime
-                    email_dt = parsedate_to_datetime(date_str)
-                    parsed["order_date"] = email_dt.strftime("%Y-%m-%d")
-                except Exception:
-                    parsed["order_date"] = datetime.now().strftime("%Y-%m-%d")
+                parsed.update(resolve_order_metadata(body, date_str))
 
                 results.append(parsed)
                 log_event(
