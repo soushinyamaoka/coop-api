@@ -22,6 +22,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -270,7 +271,8 @@ def get_email_body(msg: Message) -> str:
 # ============================================================
 
 def _fetch_coop_emails(
-    days_back: int = 14, skip_if_unchanged: bool = False, collect_all: bool = False
+    days_back: int = 14, skip_if_unchanged: bool = False, collect_all: bool = False,
+    failure: dict | None = None,
 ) -> tuple[list[dict], bool]:
     """
     GmailからCOOPデリのメールを取得してパースする
@@ -279,10 +281,17 @@ def _fetch_coop_emails(
         days_back: 何日前までのメールを取得するか（デフォルト14日）
         collect_all: True なら期間内の注文確認メールを全件パースする（過去分取り込み用）。
             外部APIの呼び出し量を抑えるため、分類はキーワード判定のみを使う。
+        failure: 渡すと、取得に失敗したときに失敗の種類を "error_kind" に入れる
+            （auth / connection / message / configuration / internal。秘密値は入れない）。
 
     Returns:
         パース済みの注文データリスト（古い順）と、取得処理が正常終了したか
     """
+    def fail(error_kind: str) -> tuple[list[dict], bool]:
+        if failure is not None:
+            failure["error_kind"] = error_kind
+        return [], False
+
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
         log_event(
             logger,
@@ -291,7 +300,7 @@ def _fetch_coop_emails(
             error_kind="validation",
             has_credentials=False,
         )
-        return [], False
+        return fail("configuration")
 
     results = []
     mail = None
@@ -315,7 +324,7 @@ def _fetch_coop_emails(
                 error_kind="external_api",
                 operation="select_inbox",
             )
-            return [], False
+            return fail("connection")
 
         # 検索条件を構築
         # Gmail固有のX-GM-RAW拡張で「coopdeli」を含むメールを検索
@@ -341,7 +350,7 @@ def _fetch_coop_emails(
                 error_kind="external_api",
                 operation="search",
             )
-            return [], False
+            return fail("connection")
 
         if not messages[0]:
             log_event(logger, logging.INFO, "email_search_completed", match_count=0)
@@ -417,11 +426,8 @@ def _fetch_coop_emails(
                 # 同一注文なら分類（Jev問い合わせを含む）より前に終了する。
                 parsed_fingerprint = source_fingerprint(body)
                 if skip_if_unchanged:
-                    try:
-                        latest = json.loads((DATA_DIR / "coop_latest.json").read_text(encoding="utf-8"))
-                        previous_fingerprint = latest.get("source_fingerprint") if isinstance(latest, dict) else None
-                    except (OSError, UnicodeError, json.JSONDecodeError):
-                        previous_fingerprint = None
+                    latest = _load_latest_order()
+                    previous_fingerprint = latest.get("source_fingerprint") if latest else None
                     if previous_fingerprint and previous_fingerprint == parsed_fingerprint:
                         log_event(
                             logger,
@@ -430,6 +436,11 @@ def _fetch_coop_emails(
                             reason="unchanged",
                             item_count=len(extract_order_rows(body)),
                         )
+                        return [], True
+                    # 古い注文メールを受け取り直した場合など、最新注文より前の注文は分類せずに終える
+                    # （最新注文は古い注文で上書きしない。履歴への追加は過去分取込で行う）。
+                    if _is_older_than_latest(resolve_order_metadata(body, date_str)["order_date"], latest):
+                        log_event(logger, logging.INFO, "import_skipped", reason="older_than_latest")
                         return [], True
 
                 # パース
@@ -492,6 +503,8 @@ def _fetch_coop_emails(
                 continue
 
         results.reverse()  # 新しい順に処理したので古い順へ戻す（末尾が最新）
+        if had_message_failure and failure is not None:
+            failure["error_kind"] = "message"
         if collect_all:
             # 過去分取込は全件が対象。1通でも取得・解析に失敗したら一部取得なので失敗とする。
             # 取得できた分は履歴へ保存され、再実行しても重複しない。
@@ -507,7 +520,7 @@ def _fetch_coop_emails(
             error_kind="auth",
             error_class=type(exc).__name__,
         )
-        return [], False
+        return fail("auth")
     except (TimeoutError, OSError) as exc:
         log_event(
             logger,
@@ -517,7 +530,7 @@ def _fetch_coop_emails(
             error_kind="timeout" if isinstance(exc, TimeoutError) else "external_api",
             error_class=type(exc).__name__,
         )
-        return [], False
+        return fail("connection")
     except Exception as exc:
         log_event(
             logger,
@@ -527,7 +540,7 @@ def _fetch_coop_emails(
             error_kind="internal",
             error_class=type(exc).__name__,
         )
-        return [], False
+        return fail("internal")
     finally:
         if mail is not None:
             try:
@@ -544,6 +557,14 @@ def _fetch_coop_emails(
                 )
 
 
+@dataclass
+class ImportOutcome:
+    """1回の取込の結果。error_kind は失敗したときだけ入る。"""
+    results: list[dict]
+    succeeded: bool
+    error_kind: str | None = None
+
+
 def run_coop_mail_import(
     days_back: int = 14, save: bool = False, skip_if_unchanged: bool = False,
     backfill: bool = False,
@@ -556,10 +577,25 @@ def run_coop_mail_import(
     return _run_coop_mail_import_job(days_back, save, skip_if_unchanged, backfill)[0]
 
 
+def import_coop_mail(days_back: int = 14, save: bool = False, skip_if_unchanged: bool = False) -> ImportOutcome:
+    """通常取込（定期・手動）を実行し、成否と失敗の種類を返す。別の取込が実行中なら ImportBusyError。"""
+    failure: dict = {}
+    results, succeeded = _run_coop_mail_import_job(days_back, save, skip_if_unchanged, False, failure)
+    return ImportOutcome(results, succeeded, None if succeeded else failure.get("error_kind", "internal"))
+
+
 def _run_coop_mail_import_job(
-    days_back: int, save: bool, skip_if_unchanged: bool, backfill: bool
+    days_back: int, save: bool, skip_if_unchanged: bool, backfill: bool,
+    failure: dict | None = None,
 ) -> tuple[list[dict], bool]:
-    """run_coop_mail_import の本体。取得結果と、job_endに記録するのと同じ成否を返す。"""
+    """run_coop_mail_import の本体。取得結果と、job_endに記録するのと同じ成否を返す。
+
+    通常取込（backfill=False）で save=True のときは、成否を取込状況ファイルにも記録する。
+    別の取込が実行中で実行しなかった場合（busy）は記録しない。
+    """
+    if failure is None:
+        failure = {}
+    record_status = save and not backfill
     run_id = uuid.uuid4().hex
     started_at = time.monotonic()
     succeeded = False
@@ -579,6 +615,7 @@ def _run_coop_mail_import_job(
                     days_back=days_back,
                     skip_if_unchanged=skip_if_unchanged and not backfill,
                     collect_all=backfill,
+                    failure=failure,
                 )
                 saved_ok = True
                 if save and results:
@@ -586,7 +623,11 @@ def _run_coop_mail_import_job(
                         saved_ok = save_results(results, update_latest=False) is not False
                     else:
                         saved_ok = save_results(results) is not False
+                    if not saved_ok and fetch_succeeded:
+                        failure["error_kind"] = "save"
                 succeeded = fetch_succeeded and saved_ok
+                if record_status:
+                    record_fetch_status(succeeded, failure.get("error_kind", "internal"))
                 return results, succeeded
         except ImportBusyError:
             log_event(logger, logging.INFO, "import_lock", result="busy")
@@ -609,6 +650,9 @@ def _run_coop_mail_import_job(
             error_kind="internal",
             error_class=type(exc).__name__,
         )
+        failure["error_kind"] = "internal"
+        if record_status:
+            record_fetch_status(False, "internal")
         raise
     finally:
         log_event(
@@ -650,11 +694,81 @@ def _load_order_history(all_file: Path) -> list[dict] | None:
     return orders if isinstance(orders, list) else None
 
 
+def _load_latest_order() -> dict | None:
+    """保存済みの最新注文（coop_latest.json）を読む。無い・読めない場合は None。"""
+    try:
+        latest = json.loads((DATA_DIR / "coop_latest.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return latest if isinstance(latest, dict) else None
+
+
+def _is_older_than_latest(order_date: str, latest: dict | None) -> bool:
+    """注文日が、保存済みの最新注文の注文日より前か。最新注文が無い・注文日が無い場合は False。"""
+    latest_date = latest.get("order_date") if latest else None
+    return bool(order_date and isinstance(latest_date, str) and latest_date and order_date < latest_date)
+
+
+# ============================================================
+# 取込状況（アプリが取込の失敗に気づけるようにする）
+# ============================================================
+
+FETCH_STATUS_FILE_NAME = "coop_fetch_status.json"
+_JST = timezone(timedelta(hours=9))
+
+
+def load_fetch_status() -> dict | None:
+    """取込状況（coop_fetch_status.json）を読む。無い・読めない場合は None。"""
+    try:
+        status = json.loads((DATA_DIR / FETCH_STATUS_FILE_NAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return status if isinstance(status, dict) else None
+
+
+def record_fetch_status(succeeded: bool, error_kind: str | None, now: datetime | None = None) -> None:
+    """通常取込（定期・手動）の成否を記録する。記録に失敗しても取込自体の結果は変えない。
+
+    記録する項目: last_attempt_at / last_result（success・failure）/ last_error_kind /
+    last_success_at / consecutive_failures。日時は日本時間。秘密値やメールの内容は書かない。
+    """
+    current = (now or datetime.now(_JST)).astimezone(_JST).isoformat(timespec="seconds")
+    previous = load_fetch_status() or {}
+    previous_failures = previous.get("consecutive_failures")
+    status = {
+        "last_attempt_at": current,
+        "last_result": "success" if succeeded else "failure",
+        "last_error_kind": None if succeeded else (error_kind or "internal"),
+        "last_success_at": current if succeeded else previous.get("last_success_at"),
+        "consecutive_failures": 0 if succeeded else (previous_failures if isinstance(previous_failures, int) else 0) + 1,
+    }
+    status_file = DATA_DIR / FETCH_STATUS_FILE_NAME
+    tmp_file = DATA_DIR / f".{FETCH_STATUS_FILE_NAME}.{uuid.uuid4().hex}.tmp"
+    try:
+        DATA_DIR.mkdir(exist_ok=True)
+        tmp_file.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp_file, status_file)
+    except OSError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "results_save_failed",
+            target="coop_fetch_status",
+            reason="status_write_failed",
+            error_class=type(exc).__name__,
+        )
+        try:
+            tmp_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def save_results(results: list[dict], update_latest: bool = True) -> bool:
     """パース結果を注文履歴（coop_orders.json）へ追記し、最新注文を coop_latest.json に保存する。
 
     注文履歴を保存できなかった場合は False を返す（呼び出し側がジョブ失敗として扱う）。
     その場合も、最新注文（coop_latest.json）の保存は従来どおり続ける。
+    保存済みの最新注文より前の注文は、最新注文にはしない（履歴にだけ追加する）。
     """
     if not results:
         log_event(logger, logging.INFO, "results_save_skipped", reason="no_results")
@@ -719,6 +833,9 @@ def save_results(results: list[dict], update_latest: bool = True) -> bool:
 
     # 最新の注文だけ別ファイルにも保存（アプリからの取得用）
     latest = results[-1]  # 一番新しいもの
+    if _is_older_than_latest(latest.get("order_date", ""), _load_latest_order()):
+        log_event(logger, logging.INFO, "results_save_skipped", target="coop_latest", reason="older_than_latest")
+        return history_saved
     latest_file = DATA_DIR / "coop_latest.json"
     with open(latest_file, "w", encoding="utf-8") as f:
         json.dump(latest, f, ensure_ascii=False, indent=2)

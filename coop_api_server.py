@@ -28,6 +28,7 @@ from datetime import datetime
 import httpx
 from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -35,8 +36,9 @@ from coop_parser import parse_coop_email, classify_item
 from fetch_coop_mail import (
     ImportBusyError,
     configure_logging,
+    import_coop_mail,
+    load_fetch_status,
     log_event,
-    run_coop_mail_import,
 )
 
 # ============================================================
@@ -379,6 +381,7 @@ def get_ingredients(authorization: str = Header(default="")):
         "parsed_at": order.get("parsed_at", ""),
         **categorized,
         "excluded": order.get("excluded", []),
+        "fetch_status": load_fetch_status(),
     }
 
 
@@ -431,6 +434,16 @@ def get_orders(
     }
 
 
+FETCH_ERROR_MESSAGES = {
+    "auth": "COOPのメール（Gmail）にログインできませんでした。アプリパスワードが無効になっている可能性があります。",
+    "connection": "COOPのメール（Gmail）に接続できませんでした。しばらくしてから再度お試しください。",
+    "message": "COOPの注文メールを読み取れませんでした。",
+    "configuration": "サーバーにCOOPのメール設定がありません。",
+    "save": "COOPの注文データを保存できませんでした。",
+    "internal": "COOPのメール取得中にエラーが発生しました。",
+}
+
+
 @app.post("/api/coop/fetch")
 def fetch_emails(
     days_back: int = Query(default=14, ge=1, le=90),
@@ -442,7 +455,7 @@ def fetch_emails(
     verify_token(authorization)
 
     try:
-        results = run_coop_mail_import(days_back=days_back, save=True)
+        outcome = import_coop_mail(days_back=days_back, save=True)
     except ImportBusyError:
         return {
             "status": "busy",
@@ -450,6 +463,17 @@ def fetch_emails(
             "orders": 0,
         }
 
+    results = outcome.results
+    if not results and not outcome.succeeded:
+        # 取得に失敗した。「見つからなかった」と区別できるよう、502で失敗の種類を返す
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": FETCH_ERROR_MESSAGES.get(outcome.error_kind, FETCH_ERROR_MESSAGES["internal"]),
+                "status": "error",
+                "error_kind": outcome.error_kind,
+            },
+        )
     if results:
         return {
             "status": "success",

@@ -48,9 +48,35 @@
   "seasonings": [...],
   "excluded": [
     { "name": "皮付きポテト...", "reason": "数量0点（未注文）" }
-  ]
+  ],
+  "fetch_status": {
+    "last_attempt_at": "2026-11-18T07:00:00+09:00",
+    "last_result": "failure",
+    "last_error_kind": "auth",
+    "last_success_at": "2026-10-10T07:00:00+09:00",
+    "consecutive_failures": 3
+  }
 }
 ```
+
+`fetch_status` は、メールの通常取込（定期取込・`POST /api/coop/fetch`）の直近の結果。`data/coop_fetch_status.json` に取込のたびに記録する。まだ記録が無い場合は `null`。過去分の取り込み（`--backfill-days`）と、別の取込が実行中で実行しなかった場合（busy）は記録しない。
+
+| 項目 | 内容 |
+|---|---|
+| `last_attempt_at` | 直近の取込の日時（日本時間） |
+| `last_result` | `success` / `failure`。注文確認メールが無かっただけの場合は `success` |
+| `last_error_kind` | 失敗の種類（成功時は `null`）。下の表を参照 |
+| `last_success_at` | 最後に成功した日時。一度も成功していなければ `null` |
+| `consecutive_failures` | 連続して失敗した回数（成功で0に戻る） |
+
+| `error_kind` | 内容 |
+|---|---|
+| `auth` | Gmailにログインできない（アプリパスワードの失効など） |
+| `connection` | Gmailに接続できない・応答がない |
+| `message` | 注文確認メールの取得・読み取りに失敗した |
+| `configuration` | サーバーにGmailの設定が無い |
+| `save` | 注文データを保存できなかった |
+| `internal` | その他のエラー |
 
 `order_date` は注文確認メール本文の「翌週商品配達予定日」を優先し、読めない場合はメール受信日時を日本時間（+09:00）にした日付、Dateヘッダーも読めない場合は取込日。`order_date_source` はそれぞれ `delivery_schedule`、`email_date`、`import_time`。金額は本文の明細より前から抽出し、読めない場合は `null`。旧保存データでは新3項目は `null`。
 
@@ -134,6 +160,17 @@ Gmail IMAPからCOOP注文確認メールを取得してJSONに保存する。�
   "message": "COOPからの注文確認メールが見つかりませんでした"
 }
 ```
+
+**レスポンス（取得に失敗、HTTP 502）**: Gmailにログインできない・接続できないなど、取得そのものに失敗した場合。`no_data`（メールが無かった）とは区別する。`detail` はエラーレスポンス共通形式と同じく利用者向けのメッセージ、`error_kind` は `GET /api/coop/ingredients` の `fetch_status` と同じ値。
+```json
+{
+  "status": "error",
+  "error_kind": "auth",
+  "detail": "COOPのメール（Gmail）にログインできませんでした。アプリパスワードが無効になっている可能性があります。"
+}
+```
+
+**最新注文の更新**: 取得した注文が、保存済みの最新注文より前の注文日（配達予定日）だった場合は、注文履歴にだけ追加し、最新注文（`GET /api/coop/ingredients`）は変えない。古い注文メールを受け取り直した場合に、最新注文が古い注文に戻らないようにするため。定期取込では、このような古い注文メールは分類・保存せずに終える。
 
 ---
 
@@ -420,3 +457,4 @@ Gmail IMAPからCOOP注文確認メールを取得してJSONに保存する。�
 | 401 | トークンが無効 |
 | 400 | リクエストパラメータが不正 |
 | 404 | 注文データが存在しない |
+| 502 | メールの取得に失敗した（`POST /api/coop/fetch`。`status`・`error_kind` も返す） |

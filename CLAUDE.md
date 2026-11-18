@@ -33,7 +33,8 @@ coop-api/
 ├── data/                   # パース結果JSON（VPS上で自動生成）
 │   ├── coop_latest.json    #   最新注文データ
 │   ├── coop_orders.json    #   全注文履歴
-│   └── category_overrides.json  # カテゴリ学習データ
+│   ├── category_overrides.json  # カテゴリ学習データ
+│   └── coop_fetch_status.json   # 通常取込の直近の成否（GET /api/coop/ingredients の fetch_status）
 └── logs/                   # ログファイル（VPS上で自動生成）
     └── fetch_coop.log
 ```
@@ -206,6 +207,9 @@ API_TOKEN=<任意のトークン>
 - `order_date` は注文確認メール本文の「翌週商品配達予定日」を優先し、読めない場合はメールDateヘッダーを日本時間（固定+09:00）へ変換した日付、ヘッダーも読めない場合は取込日。`order_date_source` は `delivery_schedule` / `email_date` / `import_time`。
 - 注文合計は明細前の「合計金額（本体）」と「合計金額（税込）」を整数円で保存し、読めない場合は `null`。APIの旧データでは日付ソース・金額項目は `null`。
 - `--backfill-days N` で過去分を全件取り込める（履歴のみ更新、キーワード分類のみ）
+- 取得に失敗した場合（Gmailにログインできない等）は `POST /api/coop/fetch` が HTTP 502・`error_kind` を返す（`no_data` はメールが無かったときだけ）。通常取込の成否は `data/coop_fetch_status.json` に記録する
+- 保存済みの最新注文より前の注文日の注文は、最新注文にしない（履歴にだけ追加。定期取込では分類せずに終える）
+- Gmailの認証情報は起動時に1回だけ読む。`.env` を差し替えたら `coop-api` サービスの再起動が必要
 
 ## よく使うコマンド
 
