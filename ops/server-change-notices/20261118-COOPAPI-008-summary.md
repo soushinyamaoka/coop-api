@@ -6,15 +6,26 @@ policy_bundle_version: 2026-09-04.1
 notice_id: 20261118-COOPAPI-008
 app: coop-api
 source_branch: main
-source_commit: cf6b1cba561d773ccaa15dafe8feceb439e05b03
+source_commit: 5c38323efabe231b075da802bba6e3479ca43549
 production_baseline_commit: c94f8a0c3a310727779610d74f01b8a80d228913
-release_commits: a09b441e733b58486b516f4dadbee7f6282fb73b, 5146ab10ac5de9ba26b84e5097b753763fb4f91d, 5b27f013aa8e962c545533cb74a9339b3880972b, cf6b1cba561d773ccaa15dafe8feceb439e05b03
+release_commits: 04b33989c8600053b8f2eab9cc2717e317dba4b9, d7437245833fa0c20f305041e18921c19ef15517, c31c9486839deed579f270b1a6cba1b6895e78ef, ed549a0783591c70d8a4d1e4d335b6ae4ed2e3ca, 222fa424109f985dabee12fbb264486acb842cca, af13ab5dd9653f1ba715a459516f8b44ddfcdaa5, a09b441e733b58486b516f4dadbee7f6282fb73b, d9956889e65f4e13c5f23025cb01ccd724aded65, 5146ab10ac5de9ba26b84e5097b753763fb4f91d, a76c20f04033e6ee67344bb78f1ad04f1b31025b, 5b27f013aa8e962c545533cb74a9339b3880972b, 265faf812bee9bf72b67f5caecbbe68564af611d, cf6b1cba561d773ccaa15dafe8feceb439e05b03, 09fa229f681d3afefe9124efc6a0817882153e97, 5c38323efabe231b075da802bba6e3479ca43549
 impact_level: L2
 status: ready_for_review
 created_by: Claude
 production_change: required
 vps_management_handoff: required
 deployment_status: not_started
+
+## 第5回提出（2026-11-27）: 文書の修正
+
+再レビューで、履歴の再試行の修正は確認済みとされ、残りは文書（release_commits・runtime contract・利用者影響・404時の表示）とされた。コードは `cf6b1cb` から変えていない（配布対象2fileは `cf6b1cb` と同一）。
+
+| 指摘 | 対応 |
+|---|---|
+| `release_commits` | 008の修正commitだけを並べていた。通知006・007と同じく、baseline `c94f8a0` から `source_commit`（`5c38323`）までの全15commitを `git rev-list --reverse c94f8a0..5c38323` で機械的に取得して記載した。008より前の通知007関連（`04b3398`・`d743724`・`c31c948`・`ed549a0`・`222fa42`・`af13ab5`。ops・文書のみ）と、008の通知書commitを含む。配布対象のコード変更は `a09b441`・`5146ab1`・`5b27f01`・`cf6b1cb` の4commit |
+| runtime contract | `ops/runtime-contract.yaml` に、008の反映後の内容を「反映前の宣言」として記載した（`5c38323`）。`coop_orders.json`・`coop_latest.json` の書き込み方（一時fileから `os.replace`、mode の引き継ぎ・新規0640）、履歴の再試行と `history_pending`、新しいfile `coop_fetch_status.json`（0640、backup不要、再生成可）、一時file `.coop_*.json.*.tmp`、lock の範囲（取込状況の記録を含む）、IMAPの60秒の打ち切り。env変数は不変 |
+| 利用者影響 | 下の「利用者への影響」を、端末のアプリ（`367447a` より前の配信中のアプリ／`367447a`）ごと・場面ごとの表示の表にした |
+| 404時の表示 | 最新注文（`coop_latest.json`）が無いと `GET /api/coop/ingredients` は404で `fetch_status` を返さないため、取込が失敗し続けていてもCOOPタブに警告は出ない。表示と確かめ方を「利用者への影響」と `API_SPEC.md` に記載した |
 
 ## 第4回提出（2026-11-27）: 履歴の再試行（新着がある場合）
 
@@ -119,8 +130,19 @@ server_impact: approval_required
 
 - user_maintenance_impact: none
 - 対象利用者・機能: 家族2名のアプリ利用。restart中の数秒だけCOOP APIが使えない可能性がある
-- 見え方の変化: 取得失敗時、**アプリを更新していない端末**は「メール取得に失敗しました: サーバーエラー (502)」と表示する（現在の「見つかりませんでした」より正確）。更新済みのアプリ（`367447a`、配信は本反映の後）は、失敗の理由と、定期取込が失敗している間の警告をCOOPタブに表示する
-- 古い注文メールを受け取り直しても、COOPタブの最新注文は変わらない
+- 端末のアプリ: 配信中のアプリは `367447a` より前。`367447a`（取得失敗の表示）は、本noticeのproduction反映・確認の後に、app ownerの承認で配信する（それまでの間は左列の表示になる）
+- 見え方の変化（COOPタブ）:
+
+| 場面 | 配信中のアプリ（`367447a` より前） | `367447a` 配信後 |
+|---|---|---|
+| 🔄 で取得に失敗（ログイン・接続・保存・その他） | 「メール取得に失敗しました: サーバーエラー (502)」。保存済みの一覧はそのまま表示（反映前は「新しい注文データが見つかりませんでした」と出て失敗に気づけなかった） | 「メール取得に失敗しました: 」に続けて理由（例: Gmailにログインできませんでした…／注文データを保存できませんでした）。保存済みの一覧はそのまま表示 |
+| 定期取込（cron）が失敗し続けている | 表示なし（反映前と同じ） | COOPタブ上部に警告「COOPメールの自動取り込みに失敗しています（最後に成功: 月/日 時:分）」と理由のヒント（ログイン・接続の失敗のとき） |
+| 注文確認メールが無い・新しい注文が無い | 「新しい注文データが見つかりませんでした。保存済み一覧を表示しています。」（反映前と同じ） | 同左 |
+| 履歴を保存できない障害が続く（`history_pending`） | 最新注文が前の週のまま進まないことがある。🔄 は「サーバーエラー (502)」 | 同左に加えて、COOPタブ上部の警告「COOPメールの自動取り込みに失敗しています（最後に成功: …）」と、🔄 の理由「注文データを保存できませんでした」 |
+| 古い注文メール・変更前の版の再送 | 最新注文は変わらない | 同左 |
+| 最新注文（`coop_latest.json`）が無い（404。通常は起きない。fileを失った場合など） | 「一覧の読み込みに失敗しました: 注文データが見つかりません。」。🔄 で失敗した場合は「メール取得に失敗しました: サーバーエラー (502) 保存済み一覧の読み込みに失敗しました: 注文データが見つかりません。」 | 同左（🔄 の部分は理由の文になる）。404では `fetch_status` が返らないため、定期取込の失敗の警告は出ない。失敗の理由は 🔄 の表示とログ（`job_end`・`external_call_failed`）で確かめる |
+
+- 現在の本番には最新注文があるため、反映直後に404の場面にはならない
 
 ## env・secret contract
 
@@ -186,7 +208,7 @@ server_impact: approval_required
 
 ## 提出前セルフチェック
 
-通知006で全項目を実施済みのため、今回は変更範囲に絞って確認した。再提出では、`a09b441` から `5146ab1` までの差分（配布対象2file・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。依存・認証・bind・cron・env・lock・終了コード・`deploy-files.txt` は不変で、コミットに秘密値・実メールの内容は無い。第4回提出では、`5b27f01` から `cf6b1cb` までの差分（`fetch_coop_mail.py`・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。再々提出では、`5146ab1` から `5b27f01` までの差分（`fetch_coop_mail.py`・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。新しい依存は無い（標準ライブラリの `stat` のみ）。
+通知006で全項目を実施済みのため、今回は変更範囲に絞って確認した。再提出では、`a09b441` から `5146ab1` までの差分（配布対象2file・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。依存・認証・bind・cron・env・lock・終了コード・`deploy-files.txt` は不変で、コミットに秘密値・実メールの内容は無い。第5回提出では、`cf6b1cb` から `5c38323` までの差分（`API_SPEC.md`・`ops/runtime-contract.yaml`・本通知のみ。コード・test・`deploy-files.txt` は不変）を確認し、`release_commits` を `git rev-list` で取り直した。第4回提出では、`5b27f01` から `cf6b1cb` までの差分（`fetch_coop_mail.py`・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。再々提出では、`5146ab1` から `5b27f01` までの差分（`fetch_coop_mail.py`・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。新しい依存は無い（標準ライブラリの `stat` のみ）。
 
 - baseline `c94f8a0` から `source_commit` までのops以外の差分は、配布対象の `coop_api_server.py`・`fetch_coop_mail.py` と、文書・test（`API_SPEC.md`・`CLAUDE.md`・`tests/`）。`coop_parser.py`・`jev_classifier.py`・`requirements.txt`・`deploy-files.txt` は変更なし。依存・認証・bind・cron・env変数名・lock・終了コードは不変。
 - 配布物に `.env`・`data/`・一時file・実メールの内容が入らないこと、通知書とコミットに実際の金額・番号・URL・アドレス・パスワードが無いことを確認した。
@@ -210,5 +232,5 @@ VPS管理レビュー後に別途調整。
 ## Approval
 
 - app owner: 方針を承認（2026-11-18「その対応、進めましょう」「良いです」）
-- VPS management review: 初回（`a09b441`）は差し戻し（保存失敗時の応答と状態更新・古い再送メールの扱い・IMAP切断の分類）。2026-11-27 に `5146ab1` で再提出。再レビューで保存失敗の502は確認済み、排他・履歴の再試行・同日旧版・IMAPの初期化・状態fileの権限・文書を差し戻し。2026-11-27 に `5b27f01` で再々提出。再レビューで、新着がある取込での履歴の再試行が残り差し戻し。2026-11-27 に `cf6b1cb` で第4回提出
+- VPS management review: 初回（`a09b441`）は差し戻し（保存失敗時の応答と状態更新・古い再送メールの扱い・IMAP切断の分類）。2026-11-27 に `5146ab1` で再提出。再レビューで保存失敗の502は確認済み、排他・履歴の再試行・同日旧版・IMAPの初期化・状態fileの権限・文書を差し戻し。2026-11-27 に `5b27f01` で再々提出。再レビューで、新着がある取込での履歴の再試行が残り差し戻し。2026-11-27 に `cf6b1cb` で第4回提出。再レビューで履歴の再試行は確認済み、文書（release_commits・runtime contract・利用者影響・404時の表示）を差し戻し。2026-11-27 に `5c38323` で第5回提出
 - production approval: 未実施（本番反映・端末配信は別承認）
