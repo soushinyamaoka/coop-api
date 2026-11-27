@@ -64,7 +64,7 @@ def setup_import(monkeypatch, tmp_path, body=BODY):
     monkeypatch.setattr(fetch, "DATA_DIR", data_dir)
     monkeypatch.setattr(fetch, "GMAIL_ADDRESS", "placeholder")
     monkeypatch.setattr(fetch, "GMAIL_APP_PASSWORD", "placeholder")
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: FakeMail(make_email(body)))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: FakeMail(make_email(body)))
     monkeypatch.setattr(jev_classifier, "classifier_mode", lambda: ("jev", None))
     calls = []
 
@@ -340,7 +340,7 @@ def test_backfill_imports_all_orders_into_history_only(monkeypatch, tmp_path):
         make_dated_email("広告メールです", "Mon, 14 Sep 2026 07:00:00 +0900"),
         make_dated_email("注文番号：2\n商品名：みそ\n数量：1点", "Sun, 20 Sep 2026 07:00:00 +0900"),
     ]
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(emails))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail(emails))
     latest_file = data_dir / "coop_latest.json"
     latest_file.write_text(json.dumps({"sentinel": "keep"}), encoding="utf-8")
 
@@ -379,7 +379,7 @@ def test_backfill_partial_fetch_failure_is_failure_and_rerun_is_idempotent(monke
         make_dated_email("注文番号：2\n商品名：みそ\n数量：1点", "Sun, 20 Sep 2026 07:00:00 +0900"),
         make_dated_email("注文番号：3\n商品名：さとう\n数量：1点", "Sun, 27 Sep 2026 07:00:00 +0900"),
     ]
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: PartiallyFailingMail(emails, {2}))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: PartiallyFailingMail(emails, {2}))
 
     result = fetch.run_coop_mail_import(days_back=365, save=True, backfill=True)
 
@@ -391,7 +391,7 @@ def test_backfill_partial_fetch_failure_is_failure_and_rerun_is_idempotent(monke
 
     # 失敗が解消した再実行は成功し、既に保存した注文は重複しない
     caplog.clear()
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(emails))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail(emails))
     fetch.run_coop_mail_import(days_back=365, save=True, backfill=True)
     assert _job_end_status(caplog) == "success"
     history = json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]
@@ -418,16 +418,16 @@ def _three_orders():
 def test_backfill_cli_exit_code_is_nonzero_on_partial_failure(monkeypatch, tmp_path):
     setup_import(monkeypatch, tmp_path)
     emails = _three_orders()
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: PartiallyFailingMail(emails, {2}))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: PartiallyFailingMail(emails, {2}))
     assert _run_main(monkeypatch, "--backfill-days", "365") == 1
 
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(emails))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail(emails))
     assert _run_main(monkeypatch, "--backfill-days", "365") == 0
 
 
 def test_backfill_cli_exit_code_is_nonzero_when_history_cannot_be_saved(monkeypatch, tmp_path):
     data_dir, _ = setup_import(monkeypatch, tmp_path)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(_three_orders()))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail(_three_orders()))
     (data_dir / "coop_orders.json").write_text("{broken", encoding="utf-8")
     assert _run_main(monkeypatch, "--backfill-days", "365") == 1
 
@@ -441,7 +441,7 @@ def test_backfill_cli_busy_exits_1_but_logs_skipped_and_job_end_success(monkeypa
     したがって、終了コード1だけで障害と判断せず、ログのimport_skippedで「未実行」と判別する。
     """
     data_dir, _ = setup_import(monkeypatch, tmp_path)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail(_three_orders()))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail(_three_orders()))
     with fetch._coop_import_lock():
         assert _run_main(monkeypatch, "--backfill-days", "365") == 1
 
@@ -479,7 +479,7 @@ def test_regular_import_still_succeeds_when_older_candidate_fails(monkeypatch, t
         make_dated_email("注文番号：2\n商品名：みそ\n数量：1点", "Sun, 20 Sep 2026 07:00:00 +0900"),
     ]
     # 新しい順に処理される。最新(2番)は取得でき、1番は処理されない。
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: PartiallyFailingMail(emails, {1}))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: PartiallyFailingMail(emails, {1}))
 
     fetch.run_coop_mail_import(days_back=14, save=True)
 
@@ -590,7 +590,7 @@ def _fetch_status(data_dir):
 
 def test_login_failure_is_reported_as_error_not_no_data(monkeypatch, tmp_path):
     data_dir, _calls = setup_import(monkeypatch, tmp_path)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: LoginFailingMail(make_email()))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: LoginFailingMail(make_email()))
     _server, client = _server_client(monkeypatch)
 
     response = client.post("/api/coop/fetch")
@@ -611,7 +611,7 @@ def test_login_failure_is_reported_as_error_not_no_data(monkeypatch, tmp_path):
 def test_connection_and_internal_failures_have_their_kind(monkeypatch, tmp_path, error, kind):
     setup_import(monkeypatch, tmp_path)
 
-    def broken(*_args):
+    def broken(*_args, **_kwargs):
         raise error
 
     monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", broken)
@@ -632,12 +632,12 @@ def test_no_order_mail_is_still_no_data_and_success(monkeypatch, tmp_path):
 
 def test_fetch_status_counts_failures_and_resets_on_success(monkeypatch, tmp_path):
     data_dir, _calls = setup_import(monkeypatch, tmp_path)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: LoginFailingMail(make_email()))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: LoginFailingMail(make_email()))
     fetch.run_coop_mail_import(save=True, skip_if_unchanged=True)  # 定期取込（cron）
     fetch.run_coop_mail_import(save=True, skip_if_unchanged=True)
     assert _fetch_status(data_dir)["consecutive_failures"] == 2
 
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: FakeMail(make_email()))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: FakeMail(make_email()))
     fetch.run_coop_mail_import(save=True, skip_if_unchanged=True)
     status = _fetch_status(data_dir)
     assert status["last_result"] == "success"
@@ -744,7 +744,7 @@ def test_resent_old_order_does_not_hide_newer_order(monkeypatch, tmp_path, skip_
     a = _order_mail(1, "しょうゆ", A_DATE)
     b = _order_mail(2, "みそ", B_DATE)
     _save_latest_from(data_dir, a)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail([a, b, a]))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([a, b, a]))
 
     result = fetch.run_coop_mail_import(save=True, skip_if_unchanged=skip_if_unchanged)
 
@@ -760,7 +760,7 @@ def test_older_week_resend_after_latest_is_skipped_without_classifying(monkeypat
     a = _order_mail(1, "しょうゆ", A_DATE)
     b = _order_mail(2, "みそ", B_DATE)
     _save_latest_from(data_dir, b)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail([b, a]))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([b, a]))
 
     result = fetch.run_coop_mail_import(save=True, skip_if_unchanged=skip_if_unchanged)
 
@@ -782,7 +782,7 @@ def test_only_older_order_mail_is_no_data_for_manual_fetch(monkeypatch, tmp_path
     latest_file = data_dir / "coop_latest.json"
     latest_file.write_text(json.dumps({"order_date": "2026-11-25", "source_fingerprint": "newest"}), encoding="utf-8")
     before = latest_file.read_bytes()
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail([_order_mail(1, "しょうゆ", A_DATE)]))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([_order_mail(1, "しょうゆ", A_DATE)]))
     _server, client = _server_client(monkeypatch)
 
     response = client.post("/api/coop/fetch")
@@ -799,7 +799,7 @@ def test_same_week_version_received_before_latest_is_not_imported(monkeypatch, t
     before_change = _order_mail(1, "しょうゆ", B_DATE)
     after_change = _order_mail(1, "みそ", "Wed, 18 Nov 2026 09:00:00 +0900")
     saved = _save_latest_from(data_dir, after_change)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail([before_change, after_change]))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([before_change, after_change]))
 
     assert fetch.run_coop_mail_import(save=True, skip_if_unchanged=True) == []
     assert classifier_calls == []
@@ -811,7 +811,7 @@ def test_same_week_change_received_after_latest_is_imported(monkeypatch, tmp_pat
     before_change = _order_mail(1, "しょうゆ", B_DATE)
     after_change = _order_mail(1, "みそ", "Wed, 18 Nov 2026 09:00:00 +0900")
     _save_latest_from(data_dir, before_change)
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: MultiFakeMail([before_change, after_change]))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([before_change, after_change]))
 
     result = fetch.run_coop_mail_import(save=True, skip_if_unchanged=True)
 
@@ -940,7 +940,7 @@ class ErrorAfterLoginMail(MultiFakeMail):
 def test_disconnect_after_login_is_connection_not_auth(monkeypatch, tmp_path, mail_factory):
     data_dir, classifier_calls = setup_import(monkeypatch, tmp_path)
     emails = _three_orders()
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: mail_factory(emails))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: mail_factory(emails))
     _server, client = _server_client(monkeypatch)
 
     response = client.post("/api/coop/fetch")
@@ -959,7 +959,7 @@ def test_disconnect_during_login_is_connection(monkeypatch, tmp_path):
         def login(self, *_args):
             raise fetch.imaplib.IMAP4.abort("socket error: EOF")
 
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: LoginAbortMail(make_email()))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: LoginAbortMail(make_email()))
     assert fetch.import_coop_mail(save=True).error_kind == "connection"
 
 
@@ -967,7 +967,7 @@ def test_backfill_disconnect_keeps_fetched_orders_and_fails(monkeypatch, tmp_pat
     data_dir, _calls = setup_import(monkeypatch, tmp_path)
     emails = _three_orders()
     # 新しい順に処理する。1通目（9/27）を取得した後で切断される
-    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args: AbortingMail(emails, "fetch", abort_after=1))
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: AbortingMail(emails, "fetch", abort_after=1))
 
     result = fetch.run_coop_mail_import(days_back=365, save=True, backfill=True)
 
@@ -994,3 +994,161 @@ def test_atomic_save_keeps_existing_file_mode(monkeypatch, tmp_path):
     for name in ("coop_orders.json", "coop_latest.json"):
         assert (data_dir / name).stat().st_mode & 0o777 == 0o640
     assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-09-27"
+
+
+# ─── 通知008の再レビュー対応（排他・履歴の再試行・同日旧版・IMAPの初期化・状態ファイルの権限） ───
+
+
+@pytest.mark.parametrize("cause", ["success", "internal"])
+def test_fetch_status_is_recorded_while_import_lock_is_held(monkeypatch, tmp_path, cause):
+    """取込状況の読み書きは、取込と同じ lock の中で行う（想定外の例外のときも）。"""
+    _data_dir, _calls = setup_import(monkeypatch, tmp_path)
+    if cause == "internal":
+        monkeypatch.setattr(fetch, "save_results", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("bug")))
+    held = []
+    real_record = fetch.record_fetch_status
+
+    def record(*args, **kwargs):
+        try:
+            with fetch._coop_import_lock():
+                held.append(False)
+        except fetch.ImportBusyError:
+            held.append(True)
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(fetch, "record_fetch_status", record)
+    if cause == "internal":
+        with pytest.raises(RuntimeError):
+            fetch.import_coop_mail(save=True)
+    else:
+        fetch.import_coop_mail(save=True)
+    assert held == [True]
+
+
+def test_order_missing_from_history_is_retried_on_next_import(monkeypatch, tmp_path, caplog):
+    """履歴の保存に失敗して最新注文だけ保存された注文は、次の取込（変化なし）で履歴に入れ直す。"""
+    data_dir, classifier_calls = setup_import(monkeypatch, tmp_path)
+    history_file = data_dir / "coop_orders.json"
+    history_file.write_text("{broken", encoding="utf-8")
+    assert fetch.import_coop_mail(save=True, skip_if_unchanged=True).error_kind == "save"
+    assert _fetch_status(data_dir)["last_error_kind"] == "save"
+
+    history_file.unlink()  # 原因が解消した
+    classifier_calls.clear()
+    outcome = fetch.import_coop_mail(save=True, skip_if_unchanged=True)
+
+    assert outcome.succeeded and outcome.results == []
+    assert classifier_calls == []  # 変化なしなので分類はしない
+    history = json.loads(history_file.read_text(encoding="utf-8"))["orders"]
+    assert [o["order_date"] for o in history] == ["2026-09-27"]
+    assert _fetch_status(data_dir)["last_result"] == "success"
+    assert any(getattr(r, "event", None) == "history_retry" for r in caplog.records)
+
+    caplog.clear()
+    fetch.import_coop_mail(save=True, skip_if_unchanged=True)  # 入った後は何もしない
+    assert not any(getattr(r, "event", None) == "history_retry" for r in caplog.records)
+    assert len(json.loads(history_file.read_text(encoding="utf-8"))["orders"]) == 1
+
+
+def test_history_retry_failure_is_save_failure(monkeypatch, tmp_path):
+    data_dir, _calls = setup_import(monkeypatch, tmp_path)
+    (data_dir / "coop_orders.json").write_text("{broken", encoding="utf-8")
+    fetch.import_coop_mail(save=True, skip_if_unchanged=True)
+
+    outcome = fetch.import_coop_mail(save=True, skip_if_unchanged=True)  # まだ履歴が壊れたまま
+
+    assert (outcome.succeeded, outcome.error_kind) == (False, "save")
+    assert _fetch_status(data_dir)["consecutive_failures"] == 2
+
+
+def test_manual_no_data_also_retries_history(monkeypatch, tmp_path):
+    data_dir, _calls = setup_import(monkeypatch, tmp_path, body="広告メールです")
+    (data_dir / "coop_latest.json").write_text(json.dumps(_order("2026-11-18", "x")), encoding="utf-8")
+    _server, client = _server_client(monkeypatch)
+
+    response = client.post("/api/coop/fetch")
+
+    assert response.status_code == 200 and response.json()["status"] == "no_data"
+    history = json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]
+    assert [o["source_fingerprint"] for o in history] == ["x"]
+
+
+@pytest.mark.parametrize("arrivals", ["resent_after_latest", "only_old_version"])
+def test_same_day_old_version_never_replaces_latest(monkeypatch, tmp_path, arrivals):
+    """同じ週の変更前の版は、最新注文の後に再送されても・最新注文のメールが見つからなくても、最新注文を戻さない。"""
+    data_dir, classifier_calls = setup_import(monkeypatch, tmp_path)
+    before_change = _order_mail(1, "しょうゆ", B_DATE)
+    after_change = _order_mail(1, "みそ", "Wed, 18 Nov 2026 09:00:00 +0900")
+    saved = _save_latest_from(data_dir, after_change)
+    saved["email_date"] = "Wed, 18 Nov 2026 09:00:00 +0900"
+    (data_dir / "coop_latest.json").write_text(json.dumps(saved), encoding="utf-8")
+    mails = [after_change, before_change] if arrivals == "resent_after_latest" else [before_change]
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail(mails))
+
+    assert fetch.run_coop_mail_import(save=True, skip_if_unchanged=True) == []
+    assert classifier_calls == []
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8")) == saved
+
+
+def test_same_day_newer_version_is_imported_even_if_latest_mail_is_missing(monkeypatch, tmp_path):
+    data_dir, classifier_calls = setup_import(monkeypatch, tmp_path)
+    before_change = _order_mail(1, "しょうゆ", B_DATE)
+    after_change = _order_mail(1, "みそ", "Wed, 18 Nov 2026 09:00:00 +0900")
+    saved = _save_latest_from(data_dir, before_change)
+    saved["email_date"] = B_DATE
+    (data_dir / "coop_latest.json").write_text(json.dumps(saved), encoding="utf-8")
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([after_change]))
+
+    result = fetch.run_coop_mail_import(save=True, skip_if_unchanged=True)
+
+    assert classifier_calls == [["みそ"]] and len(result) == 1
+
+
+def test_imap_connection_uses_timeout(monkeypatch, tmp_path):
+    setup_import(monkeypatch, tmp_path)
+    seen = {}
+
+    def connect(*args, **kwargs):
+        seen.update(kwargs)
+        return FakeMail(make_email())
+
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", connect)
+    fetch.import_coop_mail(save=False)
+    assert seen.get("timeout") == fetch.IMAP_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("error", [
+    fetch.imaplib.IMAP4.error("unexpected greeting"),
+    fetch.imaplib.IMAP4.abort("socket error: EOF"),
+    __import__("socket").timeout("timed out"),
+    ConnectionRefusedError(),
+], ids=["greeting_error", "greeting_abort", "timeout", "refused"])
+def test_imap_initialization_failure_is_connection_not_auth(monkeypatch, tmp_path, error):
+    data_dir, _calls = setup_import(monkeypatch, tmp_path)
+
+    def connect(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", connect)
+    outcome = fetch.import_coop_mail(save=True)
+    assert (outcome.succeeded, outcome.error_kind) == (False, "connection")
+    assert _fetch_status(data_dir)["last_error_kind"] == "connection"
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="POSIX mode checks are unavailable")
+def test_new_data_files_are_created_0640_regardless_of_umask(monkeypatch, tmp_path):
+    import os
+
+    data_dir, _calls = setup_import(monkeypatch, tmp_path)
+    old_umask = os.umask(0o002)
+    try:
+        fetch.import_coop_mail(save=True)
+    finally:
+        os.umask(old_umask)
+    for name in ("coop_fetch_status.json", "coop_orders.json", "coop_latest.json"):
+        assert (data_dir / name).stat().st_mode & 0o777 == 0o640, name
+
+    os.chmod(data_dir / "coop_fetch_status.json", 0o600)  # 既存の mode は引き継ぐ
+    fetch.import_coop_mail(save=True)
+    assert (data_dir / "coop_fetch_status.json").stat().st_mode & 0o777 == 0o600
+    assert not list(data_dir.glob(".*.tmp"))

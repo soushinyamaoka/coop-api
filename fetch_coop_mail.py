@@ -50,6 +50,11 @@ GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
 
 # データ保存先
 DATA_DIR = Path(__file__).parent / "data"
+# data/ に新しく作るファイルの mode（既存のファイルは置き換えても mode を引き継ぐ）
+NEW_DATA_FILE_MODE = 0o640
+
+# Gmail IMAP の接続・応答を待つ秒数（無期限に待たないため）
+IMAP_TIMEOUT_SECONDS = 60
 
 # ログ設定（共通ログ規約 v1）
 _LEVEL_NAMES = {
@@ -307,13 +312,15 @@ def _fetch_coop_emails(
     mail = None
     had_message_failure = False
     connection_lost = False
-    # ログインが終わるまでの IMAP4.error だけを認証の失敗とする（ログイン後の切断・応答異常は接続の失敗）
-    logged_in = False
+    # IMAP の段階（connect: 接続・あいさつ / login: ログイン / session: ログイン後）。
+    # 認証の失敗（auth）とするのは、login の段階の IMAP4.error（abort を除く）だけ
+    imap_stage = "connect"
     # 通常取込で、保存済みの最新注文と同じメールを見たか（それより前に届いた同じ週の版は取り込まない）
     seen_latest = False
     latest = _load_latest_order() if not collect_all else None
     latest_fingerprint = latest.get("source_fingerprint") if latest else None
     latest_date = latest.get("order_date") if latest and isinstance(latest.get("order_date"), str) else None
+    latest_received = _email_datetime(latest.get("email_date")) if latest else None
     latest_copy: tuple[str, str, str, str] | None = None
 
     def parse_order(body: str, subject: str, date_str: str, sender: str) -> dict:
@@ -322,9 +329,10 @@ def _fetch_coop_emails(
     try:
         # Gmail IMAP に接続
         log_event(logger, logging.INFO, "external_call_started", target="gmail_imap")
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=IMAP_TIMEOUT_SECONDS)
+        imap_stage = "login"
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        logged_in = True
+        imap_stage = "session"
         log_event(logger, logging.INFO, "external_call_succeeded", target="gmail_imap")
 
         # 受信トレイを選択（読み取り専用）
@@ -447,6 +455,8 @@ def _fetch_coop_emails(
                         latest_date,
                         latest_fingerprint,
                         seen_latest,
+                        _email_datetime(date_str),
+                        latest_received,
                     )
                     if decision == "latest":
                         seen_latest = True
@@ -538,16 +548,17 @@ def _fetch_coop_emails(
         )
         return fail("connection")
     except imaplib.IMAP4.error as exc:
-        kind = "connection" if logged_in else "auth"
+        is_auth = imap_stage == "login"
         log_event(
             logger,
             logging.ERROR,
             "external_call_failed",
             target="gmail_imap",
-            error_kind="external_api" if logged_in else "auth",
+            error_kind="auth" if is_auth else "external_api",
+            operation=imap_stage,
             error_class=type(exc).__name__,
         )
-        return fail(kind)
+        return fail("auth" if is_auth else "connection")
     except (TimeoutError, OSError) as exc:
         log_event(
             logger,
@@ -584,22 +595,46 @@ def _fetch_coop_emails(
                 )
 
 
+def _email_datetime(date_header) -> datetime | None:
+    """メールの Date ヘッダーを日時にする。読めない場合は None（タイムゾーンが無ければ日本時間とみなす）。"""
+    if not isinstance(date_header, str) or not date_header.strip():
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        value = parsedate_to_datetime(date_header)
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return None
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc if date_header.rstrip().endswith("-0000") else _JST)
+    return value
+
+
 def _candidate_decision(
     order_date: str, fingerprint: str, latest_date: str | None, latest_fingerprint: str | None, seen_latest: bool,
+    received: datetime | None = None, latest_received: datetime | None = None,
 ) -> str:
     """通常取込で、候補の注文確認メールをどう扱うかを決める（候補は届いた順の新しい方から渡す）。
 
     - latest: 保存済みの最新注文と同じメール（定期取込では取り込まない）
     - older_than_latest: 最新注文より前の週の注文（古い注文の再送など。最新注文を上書きしない）
-    - superseded: 最新注文と同じ週の別の版で、最新注文より前に届いたもの（変更前の注文）
+    - superseded: 最新注文と同じ週の別の版で、最新注文より古いもの（変更前の注文）
     - import: 取り込む
+
+    同じ週の別の版は、メールの日時（Date）が両方読めれば、最新注文より後の日時のときだけ取り込む
+    （変更前の版が後から再送されても、最新注文を戻さない）。日時が読めない場合は、最新注文と同じ
+    メールより前に届いたものを変更前の版とみなす。
     """
     if latest_fingerprint and fingerprint == latest_fingerprint:
         return "latest"
     if latest_date and order_date and order_date < latest_date:
         return "older_than_latest"
-    if seen_latest and latest_date and order_date == latest_date:
-        return "superseded"
+    if latest_date and order_date == latest_date:
+        if received is not None and latest_received is not None:
+            return "import" if received > latest_received else "superseded"
+        if seen_latest:
+            return "superseded"
     return "import"
 
 
@@ -700,21 +735,31 @@ def _run_coop_mail_import_job(
         try:
             with _coop_import_lock():
                 log_event(logger, logging.INFO, "import_lock", result="acquired")
-                results, fetch_succeeded = _fetch_coop_emails(
-                    days_back=days_back,
-                    skip_if_unchanged=skip_if_unchanged and not backfill,
-                    collect_all=backfill,
-                    failure=failure,
-                )
-                saved_ok = True
-                if save and results:
-                    if backfill:
-                        saved_ok = save_results(results, update_latest=False) is not False
-                    else:
-                        saved_ok = save_results(results) is not False
+                # 取込状況の読み書き（連続失敗の回数など）も、取込と同じ lock の中で行う
+                try:
+                    results, fetch_succeeded = _fetch_coop_emails(
+                        days_back=days_back,
+                        skip_if_unchanged=skip_if_unchanged and not backfill,
+                        collect_all=backfill,
+                        failure=failure,
+                    )
+                    saved_ok = True
+                    if save and results:
+                        if backfill:
+                            saved_ok = save_results(results, update_latest=False) is not False
+                        else:
+                            saved_ok = save_results(results) is not False
+                    elif save and not backfill and fetch_succeeded:
+                        # 新しい注文が無かった。前回、最新注文だけ保存できて履歴に入らなかった注文があれば足す
+                        saved_ok = _retry_latest_into_history()
                     if not saved_ok and fetch_succeeded:
                         failure["error_kind"] = "save"
-                succeeded = fetch_succeeded and saved_ok
+                    succeeded = fetch_succeeded and saved_ok
+                except Exception:
+                    failure["error_kind"] = "internal"
+                    if record_status:
+                        record_fetch_status(False, "internal")
+                    raise
                 if record_status:
                     record_fetch_status(succeeded, failure.get("error_kind", "internal"))
                 return results, succeeded
@@ -740,8 +785,6 @@ def _run_coop_mail_import_job(
             error_class=type(exc).__name__,
         )
         failure["error_kind"] = "internal"
-        if record_status:
-            record_fetch_status(False, "internal")
         raise
     finally:
         log_event(
@@ -831,12 +874,9 @@ def record_fetch_status(succeeded: bool, error_kind: str | None, now: datetime |
         "last_success_at": current if succeeded else previous.get("last_success_at"),
         "consecutive_failures": 0 if succeeded else (previous_failures if isinstance(previous_failures, int) else 0) + 1,
     }
-    status_file = DATA_DIR / FETCH_STATUS_FILE_NAME
-    tmp_file = DATA_DIR / f".{FETCH_STATUS_FILE_NAME}.{uuid.uuid4().hex}.tmp"
     try:
         DATA_DIR.mkdir(exist_ok=True)
-        tmp_file.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp_file, status_file)
+        _write_json_atomic(DATA_DIR / FETCH_STATUS_FILE_NAME, status)
     except OSError as exc:
         log_event(
             logger,
@@ -846,16 +886,14 @@ def record_fetch_status(succeeded: bool, error_kind: str | None, now: datetime |
             reason="status_write_failed",
             error_class=type(exc).__name__,
         )
-        try:
-            tmp_file.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _write_json_atomic(path: Path, data) -> None:
     """一時ファイルに書いてから置き換える。失敗したら一時ファイルを消して OSError を投げる。
 
     既存のファイルがあれば、その権限（mode）を引き継ぐ（置き換えで権限が変わらないように）。
+    新しく作るときは NEW_DATA_FILE_MODE（0640）にする（プロセスの umask に左右されない）。
+    所有者・グループは書いたプロセス（本番では coop-api）になる。
     """
     tmp_file = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     try:
@@ -864,9 +902,8 @@ def _write_json_atomic(path: Path, data) -> None:
         try:
             mode = stat.S_IMODE(os.stat(path).st_mode)
         except FileNotFoundError:
-            mode = None
-        if mode is not None:
-            os.chmod(tmp_file, mode)
+            mode = NEW_DATA_FILE_MODE
+        os.chmod(tmp_file, mode)
         os.replace(tmp_file, path)
     except OSError:
         try:
@@ -874,6 +911,22 @@ def _write_json_atomic(path: Path, data) -> None:
         except OSError:
             pass
         raise
+
+
+def _retry_latest_into_history() -> bool:
+    """最新注文（coop_latest.json）が注文履歴に無ければ足す。足せなかった場合だけ False。
+
+    注文履歴の保存に失敗して最新注文だけ保存された場合、次の取込では同じ注文が「変化なし」となり、
+    履歴に入る機会が無くなる。新しい注文が無かった取込のたびにここで確かめて、履歴へ入れ直す。
+    """
+    latest = _load_latest_order()
+    if not latest or not latest.get("order_date"):
+        return True
+    history = _load_order_history(DATA_DIR / "coop_orders.json")
+    if history is not None and _order_key(latest) in {_order_key(o) for o in history if isinstance(o, dict)}:
+        return True
+    log_event(logger, logging.INFO, "history_retry", target="coop_orders", order_count=1)
+    return save_results([latest], update_latest=False)
 
 
 def save_results(results: list[dict], update_latest: bool = True) -> bool:
