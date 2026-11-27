@@ -444,6 +444,17 @@ FETCH_ERROR_MESSAGES = {
 }
 
 
+def _fetch_error_response(error_kind: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=502,
+        content={
+            "detail": FETCH_ERROR_MESSAGES.get(error_kind, FETCH_ERROR_MESSAGES["internal"]),
+            "status": "error",
+            "error_kind": error_kind,
+        },
+    )
+
+
 @app.post("/api/coop/fetch")
 def fetch_emails(
     days_back: int = Query(default=14, ge=1, le=90),
@@ -462,18 +473,15 @@ def fetch_emails(
             "message": "別の取込処理を実行中です。しばらくしてから再度お試しください。",
             "orders": 0,
         }
+    except Exception:
+        # 想定外の失敗。取込状況には internal の失敗として記録済み（job_failed もログに出ている）
+        return _fetch_error_response("internal")
 
     results = outcome.results
-    if not results and not outcome.succeeded:
-        # 取得に失敗した。「見つからなかった」と区別できるよう、502で失敗の種類を返す
-        return JSONResponse(
-            status_code=502,
-            content={
-                "detail": FETCH_ERROR_MESSAGES.get(outcome.error_kind, FETCH_ERROR_MESSAGES["internal"]),
-                "status": "error",
-                "error_kind": outcome.error_kind,
-            },
-        )
+    if not outcome.succeeded:
+        # 取得・保存に失敗した。「見つからなかった」「取得できた」と区別できるよう、502で失敗の種類を返す
+        # （保存に失敗したときは、取得できた注文があっても成功にしない）
+        return _fetch_error_response(outcome.error_kind or "internal")
     if results:
         return {
             "status": "success",

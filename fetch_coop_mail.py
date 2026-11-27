@@ -17,6 +17,7 @@ from email.header import decode_header
 from email.message import Message
 import os
 import json
+import stat
 import logging
 import sys
 import time
@@ -305,12 +306,25 @@ def _fetch_coop_emails(
     results = []
     mail = None
     had_message_failure = False
+    connection_lost = False
+    # ログインが終わるまでの IMAP4.error だけを認証の失敗とする（ログイン後の切断・応答異常は接続の失敗）
+    logged_in = False
+    # 通常取込で、保存済みの最新注文と同じメールを見たか（それより前に届いた同じ週の版は取り込まない）
+    seen_latest = False
+    latest = _load_latest_order() if not collect_all else None
+    latest_fingerprint = latest.get("source_fingerprint") if latest else None
+    latest_date = latest.get("order_date") if latest and isinstance(latest.get("order_date"), str) else None
+    latest_copy: tuple[str, str, str, str] | None = None
+
+    def parse_order(body: str, subject: str, date_str: str, sender: str) -> dict:
+        return _parse_order_mail(body, subject, date_str, sender, keyword_only=collect_all)
 
     try:
         # Gmail IMAP に接続
         log_event(logger, logging.INFO, "external_call_started", target="gmail_imap")
         mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        logged_in = True
         log_event(logger, logging.INFO, "external_call_succeeded", target="gmail_imap")
 
         # 受信トレイを選択（読み取り専用）
@@ -423,71 +437,59 @@ def _fetch_coop_emails(
                     )
                     continue
 
-                # 同一注文なら分類（Jev問い合わせを含む）より前に終了する。
-                parsed_fingerprint = source_fingerprint(body)
-                if skip_if_unchanged:
-                    latest = _load_latest_order()
-                    previous_fingerprint = latest.get("source_fingerprint") if latest else None
-                    if previous_fingerprint and previous_fingerprint == parsed_fingerprint:
+                # 通常取込では、分類（Jev問い合わせを含む）より前に、取り込む注文かを決める。
+                # 候補は届いた順の新しい方から見る。古い注文の再送メールが新しい注文より後に届いても、
+                # そこで打ち切らずに次の候補を見る（新しい注文を見落とさない）。
+                if not collect_all:
+                    decision = _candidate_decision(
+                        resolve_order_metadata(body, date_str)["order_date"],
+                        source_fingerprint(body),
+                        latest_date,
+                        latest_fingerprint,
+                        seen_latest,
+                    )
+                    if decision == "latest":
+                        seen_latest = True
                         log_event(
                             logger,
                             logging.INFO,
-                            "import_skipped",
-                            reason="unchanged",
-                            item_count=len(extract_order_rows(body)),
+                            "email_candidate_skipped",
+                            reason="same_as_latest",
+                            candidate_number=candidate_number,
                         )
-                        return [], True
-                    # 古い注文メールを受け取り直した場合など、最新注文より前の注文は分類せずに終える
-                    # （最新注文は古い注文で上書きしない。履歴への追加は過去分取込で行う）。
-                    if _is_older_than_latest(resolve_order_metadata(body, date_str)["order_date"], latest):
-                        log_event(logger, logging.INFO, "import_skipped", reason="older_than_latest")
-                        return [], True
-
-                # パース
-                classifier = None
-                from jev_classifier import classifier_mode
-                mode, disabled_reason = ("keyword", None) if collect_all else classifier_mode()
-                if disabled_reason:
-                    global _warned_missing_jev_key
-                    if not _warned_missing_jev_key:
-                        log_event(logger, logging.WARNING, "jev_classifier_disabled", reason=disabled_reason)
-                        _warned_missing_jev_key = True
-                if mode == "jev":
-                    typesafe_key = os.getenv("TYPESAFE_API_KEY", "")
-                    if typesafe_key:
-                        from jev_classifier import classify_products_sync
-                        decisions, jev_stats = classify_products_sync(
-                            extract_product_names(body),
-                            api_key=typesafe_key,
-                            cache_path=DATA_DIR / "category_jev_cache.json",
-                            overrides_path=DATA_DIR / "category_overrides.json",
+                        if not skip_if_unchanged and latest_copy is None:
+                            # 手動取込は、より新しい注文が無ければ最新注文を取り込み直す
+                            latest_copy = (body, subject, date_str, sender)
+                        continue
+                    if decision in ("older_than_latest", "superseded"):
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "email_candidate_skipped",
+                            reason=decision,
+                            candidate_number=candidate_number,
                         )
-                        def classifier(name):
-                            clean_name = name.strip()
-                            return decisions.get(
-                                clean_name,
-                                {"choice": classify_item(clean_name), "source": "keyword"},
-                            )
-                        log_event(logger, logging.INFO, "jev_classification_summary", **jev_stats)
-                parsed = parse_coop_email(body, classifier=classifier)
-                parsed["email_subject"] = subject
-                parsed["email_date"] = date_str
-                parsed["email_sender"] = sender
+                        continue
 
-                parsed.update(resolve_order_metadata(body, date_str))
-
+                parsed = parse_order(body, subject, date_str, sender)
                 results.append(parsed)
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "email_parsed",
-                    ingredient_count=len(parsed["ingredients"]),
-                    kit_count=len(parsed["kits"]),
-                    excluded_count=parsed["excluded_count"],
-                )
                 if not collect_all:
                     break  # 注文確認メールが見つかったので終了
 
+            except (imaplib.IMAP4.abort, OSError) as exc:
+                # 接続が切れた。残りの候補も取得できないので、ここで打ち切って接続の失敗とする
+                connection_lost = True
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "external_call_failed",
+                    target="gmail_imap",
+                    error_kind="external_api",
+                    operation="fetch_message",
+                    error_class=type(exc).__name__,
+                    attempt=candidate_number,
+                )
+                break
             except Exception as exc:
                 had_message_failure = True
                 log_event(
@@ -502,7 +504,20 @@ def _fetch_coop_emails(
                 )
                 continue
 
+        if not collect_all and not results and not connection_lost:
+            if latest_copy is not None:
+                results.append(parse_order(*latest_copy))
+            elif seen_latest:
+                log_event(logger, logging.INFO, "import_skipped", reason="unchanged")
+            elif latest_date and not had_message_failure:
+                log_event(logger, logging.INFO, "import_skipped", reason="no_newer_order")
+
         results.reverse()  # 新しい順に処理したので古い順へ戻す（末尾が最新）
+        if connection_lost:
+            if failure is not None:
+                failure["error_kind"] = "connection"
+            # 過去分取込は、切断までに取得できた分を保存する（再実行しても重複しない）
+            return results, False
         if had_message_failure and failure is not None:
             failure["error_kind"] = "message"
         if collect_all:
@@ -511,16 +526,28 @@ def _fetch_coop_emails(
             return results, not had_message_failure
         return results, bool(results) or not had_message_failure
 
-    except imaplib.IMAP4.error as exc:
+    except imaplib.IMAP4.abort as exc:
+        # 接続の切断（abort は IMAP4.error の子クラスなので、認証より先に判定する）
         log_event(
             logger,
             logging.ERROR,
             "external_call_failed",
             target="gmail_imap",
-            error_kind="auth",
+            error_kind="external_api",
             error_class=type(exc).__name__,
         )
-        return fail("auth")
+        return fail("connection")
+    except imaplib.IMAP4.error as exc:
+        kind = "connection" if logged_in else "auth"
+        log_event(
+            logger,
+            logging.ERROR,
+            "external_call_failed",
+            target="gmail_imap",
+            error_kind="external_api" if logged_in else "auth",
+            error_class=type(exc).__name__,
+        )
+        return fail(kind)
     except (TimeoutError, OSError) as exc:
         log_event(
             logger,
@@ -555,6 +582,68 @@ def _fetch_coop_emails(
                     operation="logout",
                     error_class=type(exc).__name__,
                 )
+
+
+def _candidate_decision(
+    order_date: str, fingerprint: str, latest_date: str | None, latest_fingerprint: str | None, seen_latest: bool,
+) -> str:
+    """通常取込で、候補の注文確認メールをどう扱うかを決める（候補は届いた順の新しい方から渡す）。
+
+    - latest: 保存済みの最新注文と同じメール（定期取込では取り込まない）
+    - older_than_latest: 最新注文より前の週の注文（古い注文の再送など。最新注文を上書きしない）
+    - superseded: 最新注文と同じ週の別の版で、最新注文より前に届いたもの（変更前の注文）
+    - import: 取り込む
+    """
+    if latest_fingerprint and fingerprint == latest_fingerprint:
+        return "latest"
+    if latest_date and order_date and order_date < latest_date:
+        return "older_than_latest"
+    if seen_latest and latest_date and order_date == latest_date:
+        return "superseded"
+    return "import"
+
+
+def _parse_order_mail(body: str, subject: str, date_str: str, sender: str, keyword_only: bool) -> dict:
+    """注文確認メールを分類して注文データにする。keyword_only なら外部の分類（Jev）を使わない。"""
+    global _warned_missing_jev_key
+    classifier = None
+    from jev_classifier import classifier_mode
+    mode, disabled_reason = ("keyword", None) if keyword_only else classifier_mode()
+    if disabled_reason and not _warned_missing_jev_key:
+        log_event(logger, logging.WARNING, "jev_classifier_disabled", reason=disabled_reason)
+        _warned_missing_jev_key = True
+    if mode == "jev":
+        typesafe_key = os.getenv("TYPESAFE_API_KEY", "")
+        if typesafe_key:
+            from jev_classifier import classify_products_sync
+            decisions, jev_stats = classify_products_sync(
+                extract_product_names(body),
+                api_key=typesafe_key,
+                cache_path=DATA_DIR / "category_jev_cache.json",
+                overrides_path=DATA_DIR / "category_overrides.json",
+            )
+
+            def classifier(name):
+                clean_name = name.strip()
+                return decisions.get(
+                    clean_name,
+                    {"choice": classify_item(clean_name), "source": "keyword"},
+                )
+            log_event(logger, logging.INFO, "jev_classification_summary", **jev_stats)
+    parsed = parse_coop_email(body, classifier=classifier)
+    parsed["email_subject"] = subject
+    parsed["email_date"] = date_str
+    parsed["email_sender"] = sender
+    parsed.update(resolve_order_metadata(body, date_str))
+    log_event(
+        logger,
+        logging.INFO,
+        "email_parsed",
+        ingredient_count=len(parsed["ingredients"]),
+        kit_count=len(parsed["kits"]),
+        excluded_count=parsed["excluded_count"],
+    )
+    return parsed
 
 
 @dataclass
@@ -763,11 +852,36 @@ def record_fetch_status(succeeded: bool, error_kind: str | None, now: datetime |
             pass
 
 
+def _write_json_atomic(path: Path, data) -> None:
+    """一時ファイルに書いてから置き換える。失敗したら一時ファイルを消して OSError を投げる。
+
+    既存のファイルがあれば、その権限（mode）を引き継ぐ（置き換えで権限が変わらないように）。
+    """
+    tmp_file = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            mode = None
+        if mode is not None:
+            os.chmod(tmp_file, mode)
+        os.replace(tmp_file, path)
+    except OSError:
+        try:
+            tmp_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def save_results(results: list[dict], update_latest: bool = True) -> bool:
     """パース結果を注文履歴（coop_orders.json）へ追記し、最新注文を coop_latest.json に保存する。
 
-    注文履歴を保存できなかった場合は False を返す（呼び出し側がジョブ失敗として扱う）。
-    その場合も、最新注文（coop_latest.json）の保存は従来どおり続ける。
+    注文履歴・最新注文のどちらかを保存できなかった場合は False を返す（呼び出し側がジョブ失敗として扱う）。
+    注文履歴を保存できなかった場合も、最新注文（coop_latest.json）の保存は従来どおり続ける。
+    どちらのファイルも一時ファイルに書いてから置き換えるので、書き込みの途中で失敗しても元の内容が残る。
     保存済みの最新注文より前の注文は、最新注文にはしない（履歴にだけ追加する）。
     """
     if not results:
@@ -806,8 +920,7 @@ def save_results(results: list[dict], update_latest: bool = True) -> bool:
                     "last_updated": datetime.now().isoformat(timespec="seconds"),
                     "orders": history,
                 }
-                with open(all_file, "w", encoding="utf-8") as f:
-                    json.dump(all_data, f, ensure_ascii=False, indent=2)
+                _write_json_atomic(all_file, all_data)
         except OSError as exc:
             history_saved = False
             log_event(
@@ -836,9 +949,18 @@ def save_results(results: list[dict], update_latest: bool = True) -> bool:
     if _is_older_than_latest(latest.get("order_date", ""), _load_latest_order()):
         log_event(logger, logging.INFO, "results_save_skipped", target="coop_latest", reason="older_than_latest")
         return history_saved
-    latest_file = DATA_DIR / "coop_latest.json"
-    with open(latest_file, "w", encoding="utf-8") as f:
-        json.dump(latest, f, ensure_ascii=False, indent=2)
+    try:
+        _write_json_atomic(DATA_DIR / "coop_latest.json", latest)
+    except OSError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "results_save_failed",
+            target="coop_latest",
+            reason="latest_write_failed",
+            error_class=type(exc).__name__,
+        )
+        return False
     log_event(logger, logging.INFO, "results_saved", target="coop_latest", order_count=1)
     return history_saved
 
