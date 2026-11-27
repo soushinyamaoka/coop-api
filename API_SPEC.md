@@ -10,7 +10,7 @@
 
 - 合わないトークン・無いときは 401。`API_READ_TOKEN` が未設定なら参照専用トークンは使えない（空のトークンは一致しない）
 - トークンは時間差で推測されない比べ方（`hmac.compare_digest`）で照合する
-- `API_TOKEN` が未設定のときは認証を行わない（従来どおり。本番では設定する）
+- **起動時の確認**: `API_TOKEN` が無い（空）、または `API_READ_TOKEN` が `API_TOKEN` と同じ値なら、起動しない（ログ `startup_configuration_invalid`、`reason` は `api_token_missing`・`read_token_same_as_api_token`。値は出さない。`python coop_api_server.py` では終了コード3）。以前の「`API_TOKEN` が未設定なら認証を行わない」動きは無くした
 
 ---
 

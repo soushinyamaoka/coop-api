@@ -100,6 +100,7 @@ coop-api/
 ### 認証
 - Bearer Token方式: `Authorization: Bearer <API_TOKEN>`
 - 全エンドポイントで必要（`/` を除く）
+- `API_TOKEN` が無い・`API_READ_TOKEN` が `API_TOKEN` と同じ値なら起動しない（`check_token_config`）。認証を飛ばす動きは無い
 - 参照専用トークン `API_READ_TOKEN`（meal-api 用）は `GET /api/coop/ingredients`・`/api/coop/orders` だけで使え、ほかは403（`verify_read_token`）。新しいAPIを足すときは `verify_token`（全権）を使い、参照専用で使わせるかを決める
 
 ### 外部接続

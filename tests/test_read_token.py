@@ -80,3 +80,70 @@ def test_only_order_reads_use_read_token():
             definition = next(l for l in reversed(lines[:number]) if l.startswith("def "))
             functions.append(re.match(r"def (\w+)", definition).group(1))
     assert sorted(functions) == ["get_ingredients", "get_orders"]
+
+
+# ─── 通知009の差し戻し: 全権トークンの欠落・同値を起動時に拒否する ───────────────
+
+
+@pytest.mark.parametrize("api_token, read_token, reason", [
+    ("", "", "api_token_missing"),
+    ("", READ, "api_token_missing"),
+    (FULL, FULL, "read_token_same_as_api_token"),
+])
+def test_startup_rejects_bad_token_config(api_token, read_token, reason):
+    with pytest.raises(server.TokenConfigError) as exc:
+        server.check_token_config(api_token, read_token)
+    assert str(exc.value) == reason
+
+
+@pytest.mark.parametrize("read_token", ["", READ])
+def test_startup_accepts_valid_token_config(read_token):
+    server.check_token_config(FULL, read_token)  # 参照専用トークンは任意
+
+
+@pytest.mark.parametrize("api_token, read_token", [("", ""), (FULL, FULL)])
+def test_app_does_not_start_with_bad_token_config(monkeypatch, caplog, api_token, read_token):
+    monkeypatch.setattr(server, "API_TOKEN", api_token)
+    monkeypatch.setattr(server, "API_READ_TOKEN", read_token)
+    with pytest.raises(server.TokenConfigError):
+        with TestClient(server.app):  # lifespan（startup）を動かす
+            pass
+    events = [r for r in caplog.records if getattr(r, "event", None) == "startup_configuration_invalid"]
+    assert events and events[0].event_fields["reason"] in {"api_token_missing", "read_token_same_as_api_token"}
+    assert not any(getattr(r, "event", None) == "startup" for r in caplog.records)
+    # 値はログに出さない
+    text = " ".join(str(getattr(r, "event_fields", "")) for r in caplog.records)
+    assert FULL not in text
+
+
+def test_app_starts_with_valid_token_config(monkeypatch):
+    monkeypatch.setattr(server, "API_TOKEN", FULL)
+    monkeypatch.setattr(server, "API_READ_TOKEN", READ)
+    with TestClient(server.app) as c:
+        assert c.get("/").status_code == 200
+
+
+def test_main_exits_3_without_api_token():
+    """python coop_api_server.py でも、全権トークンが無ければ待ち受けを始めずに終了コード3で終わる"""
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k not in ("API_TOKEN", "API_READ_TOKEN")}
+    env["API_PORT"] = "0"
+    code = (
+        "import dotenv, runpy; dotenv.load_dotenv=lambda *a, **k: False; "
+        "runpy.run_path('coop_api_server.py', run_name='__main__')"
+    )
+    child = subprocess.run([sys.executable, "-c", code], cwd=Path(server.__file__).resolve().parent,
+                           env=env, capture_output=True, text=True, timeout=30)
+    assert child.returncode == 3
+    assert "startup_configuration_invalid" in child.stderr and "api_token_missing" in child.stderr
+
+
+def test_no_auth_skip_when_api_token_empty(client, monkeypatch):
+    """全権トークンが空でも、認証を飛ばさない（従来は認証なしで通っていた）"""
+    monkeypatch.setattr(server, "API_TOKEN", "")
+    monkeypatch.setattr(server, "API_READ_TOKEN", "")
+    assert client.get("/api/coop/ingredients").status_code == 401
+    assert client.get("/api/coop/meals", headers=bearer("")).status_code == 401

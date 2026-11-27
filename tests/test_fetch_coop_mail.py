@@ -267,6 +267,7 @@ def test_api_date_and_amount_fields_include_null_for_legacy(monkeypatch):
     with patch("dotenv.load_dotenv", return_value=False), patch.object(Path, "mkdir"):
         import coop_api_server as server
     monkeypatch.setattr(server, "verify_token", lambda _authorization: None)
+    monkeypatch.setattr(server, "verify_read_token", lambda _authorization: None)
     legacy = _order("2026-09-30", "legacy")
     monkeypatch.setattr(server, "load_latest_order", lambda: legacy)
     monkeypatch.setattr(server, "load_all_orders", lambda: {"orders": [legacy]})
@@ -523,6 +524,7 @@ def test_orders_endpoint_returns_history_newest_first_with_items(monkeypatch, tm
         import coop_api_server as server
 
     monkeypatch.setattr(server, "verify_token", lambda _authorization: None)
+    monkeypatch.setattr(server, "verify_read_token", lambda _authorization: None)
     monkeypatch.setattr(server, "load_all_orders", lambda: {
         "last_updated": "2026-10-04T07:00:00",
         "orders": [_order("2026-09-27", "a", "しょうゆ"), _order("2026-10-04", "b", "みそ")],
@@ -551,6 +553,7 @@ def test_fetch_endpoint_returns_busy_without_running_import(monkeypatch):
         import coop_api_server as server
 
     monkeypatch.setattr(server, "verify_token", lambda _authorization: None)
+    monkeypatch.setattr(server, "verify_read_token", lambda _authorization: None)
     monkeypatch.setattr(
         server,
         "import_coop_mail",
@@ -579,6 +582,7 @@ def _server_client(monkeypatch):
         import coop_api_server as server
 
     monkeypatch.setattr(server, "verify_token", lambda _authorization: None)
+    monkeypatch.setattr(server, "verify_read_token", lambda _authorization: None)
     from fastapi.testclient import TestClient
 
     return server, TestClient(server.app)

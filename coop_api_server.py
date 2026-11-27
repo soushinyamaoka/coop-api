@@ -134,9 +134,29 @@ logger = logging.getLogger(__name__)
 # FastAPI アプリ
 # ============================================================
 
+class TokenConfigError(Exception):
+    """トークンの設定の誤り。理由は決まったコード（値は含めない）"""
+
+
+def check_token_config(api_token: str, read_token: str) -> None:
+    """起動時の確認。全権トークンが無い、または参照専用トークンが全権トークンと同じ値なら TokenConfigError。
+
+    全権トークンが無いと全APIが認証なしになり、同じ値だと参照専用トークンで全権の操作ができてしまうため、起動しない。
+    """
+    if not api_token:
+        raise TokenConfigError("api_token_missing")
+    if read_token and hmac.compare_digest(read_token.encode("utf-8"), api_token.encode("utf-8")):
+        raise TokenConfigError("read_token_same_as_api_token")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """起動方法に依存せずstartup/shutdownイベントを記録する。"""
+    """起動方法に依存せずstartup/shutdownイベントを記録する。トークンの設定が誤っていれば起動しない。"""
+    try:
+        check_token_config(API_TOKEN, API_READ_TOKEN)
+    except TokenConfigError as exc:
+        log_event(logger, logging.CRITICAL, "startup_configuration_invalid", reason=str(exc))
+        raise
     log_event(logger, logging.INFO, "startup")
     try:
         yield
@@ -171,9 +191,10 @@ def _bearer_matches(authorization: str, token: str) -> bool:
 
 
 def verify_token(authorization: str = Header(default="")):
-    """APIトークンの検証（全権。設定されている場合のみ）。参照専用トークン（API_READ_TOKEN）では 403"""
-    if not API_TOKEN:
-        return  # トークン未設定なら認証スキップ（従来どおり）
+    """APIトークンの検証（全権）。参照専用トークン（API_READ_TOKEN）では 403。
+
+    全権トークンが無いときは起動しない（check_token_config）。念のため、ここでも無ければ一致しない（401）。
+    """
     if _bearer_matches(authorization, API_TOKEN):
         return
     if _bearer_matches(authorization, API_READ_TOKEN):
@@ -183,8 +204,6 @@ def verify_token(authorization: str = Header(default="")):
 
 def verify_read_token(authorization: str = Header(default="")):
     """注文の参照（GET /api/coop/ingredients・/api/coop/orders）だけ。全権のトークンか参照専用トークン"""
-    if not API_TOKEN:
-        return  # トークン未設定なら認証スキップ（従来どおり）
     if _bearer_matches(authorization, API_TOKEN) or _bearer_matches(authorization, API_READ_TOKEN):
         return
     raise HTTPException(status_code=401, detail="認証エラー: 無効なトークンです")
@@ -1307,7 +1326,17 @@ def update_classification(
 # ============================================================
 
 if __name__ == "__main__":
+    import sys
+
+    try:
+        check_token_config(API_TOKEN, API_READ_TOKEN)
+    except TokenConfigError as exc:
+        # 値は出さない。systemd は再起動を繰り返すが、設定を直すまで起動しない（認証なしで動かさない）
+        log_event(logger, logging.CRITICAL, "startup_configuration_invalid", reason=str(exc))
+        sys.exit(3)
+
     import uvicorn
+
     uvicorn.run(
         app,
         host=API_HOST,

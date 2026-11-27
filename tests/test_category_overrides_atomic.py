@@ -30,6 +30,7 @@ def isolated_data(monkeypatch):
     monkeypatch.setattr(api, "CATEGORY_OVERRIDES_LOCK", data_dir / ".category_overrides.lock")
     monkeypatch.setattr(api, "CATEGORY_OVERRIDES_TMP_DIR", data_dir / ".category_overrides_tmp")
     monkeypatch.setattr(api, "_CATEGORY_THREAD_LOCK", threading.Lock())
+    monkeypatch.setattr(api, "API_TOKEN", "test-token")  # 全権トークンが無いと認証で止まる（通知009）
     try:
         yield data_dir
     finally:
@@ -38,7 +39,7 @@ def isolated_data(monkeypatch):
 
 def put(name, category):
     return api.update_classification(
-        api.ClassifyRequest(original_name=name, category=category), authorization=""
+        api.ClassifyRequest(original_name=name, category=category), authorization="Bearer test-token"
     )
 
 
@@ -60,7 +61,8 @@ def test_concurrent_distinct_puts_from_separate_processes_preserve_both(isolated
         "api.CATEGORY_OVERRIDES_FILE=api.DATA_DIR/'category_overrides.json'; "
         "api.CATEGORY_OVERRIDES_LOCK=api.DATA_DIR/'.category_overrides.lock'; "
         "api.CATEGORY_OVERRIDES_TMP_DIR=api.DATA_DIR/'.category_overrides_tmp'; "
-        "api.update_classification(api.ClassifyRequest(original_name=ITEM, category='食材'), authorization='')"
+        "api.API_TOKEN='test-token'; "
+        "api.update_classification(api.ClassifyRequest(original_name=ITEM, category='食材'), authorization='Bearer test-token')"
     )
     children = [
         subprocess.Popen(
