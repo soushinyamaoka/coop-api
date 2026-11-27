@@ -16,6 +16,10 @@ production_change: required
 vps_management_handoff: required
 deployment_status: not_started
 
+## 第6回提出（2026-11-27）: user_maintenance_impact
+
+再レビューの残り1点として、「利用者への影響」の `user_maintenance_impact` を `none` から `possible` に直した（理由を同じ行に記載）。通知書のみの修正で、`source_commit`・`release_commits`・コード・test・runtime contract は第5回提出（`5c38323`）から変えていない。
+
 ## 第5回提出（2026-11-27）: 文書の修正
 
 再レビューで、履歴の再試行の修正は確認済みとされ、残りは文書（release_commits・runtime contract・利用者影響・404時の表示）とされた。コードは `cf6b1cb` から変えていない（配布対象2fileは `cf6b1cb` と同一）。
@@ -128,7 +132,7 @@ server_impact: approval_required
 
 ## 利用者への影響
 
-- user_maintenance_impact: none
+- user_maintenance_impact: possible（反映時のrestartで数秒COOP APIが使えない可能性があるほか、取得・保存に失敗したときは利用者の画面に失敗の表示や警告が出て、`.env` の差し替え等の対応が必要になる場合がある。履歴を保存できない障害の間は、最新注文が前の週のまま進まないことがある。下表）
 - 対象利用者・機能: 家族2名のアプリ利用。restart中の数秒だけCOOP APIが使えない可能性がある
 - 端末のアプリ: 配信中のアプリは `367447a` より前。`367447a`（取得失敗の表示）は、本noticeのproduction反映・確認の後に、app ownerの承認で配信する（それまでの間は左列の表示になる）
 - 見え方の変化（COOPタブ）:
@@ -232,5 +236,5 @@ VPS管理レビュー後に別途調整。
 ## Approval
 
 - app owner: 方針を承認（2026-11-18「その対応、進めましょう」「良いです」）
-- VPS management review: 初回（`a09b441`）は差し戻し（保存失敗時の応答と状態更新・古い再送メールの扱い・IMAP切断の分類）。2026-11-27 に `5146ab1` で再提出。再レビューで保存失敗の502は確認済み、排他・履歴の再試行・同日旧版・IMAPの初期化・状態fileの権限・文書を差し戻し。2026-11-27 に `5b27f01` で再々提出。再レビューで、新着がある取込での履歴の再試行が残り差し戻し。2026-11-27 に `cf6b1cb` で第4回提出。再レビューで履歴の再試行は確認済み、文書（release_commits・runtime contract・利用者影響・404時の表示）を差し戻し。2026-11-27 に `5c38323` で第5回提出
+- VPS management review: 初回（`a09b441`）は差し戻し（保存失敗時の応答と状態更新・古い再送メールの扱い・IMAP切断の分類）。2026-11-27 に `5146ab1` で再提出。再レビューで保存失敗の502は確認済み、排他・履歴の再試行・同日旧版・IMAPの初期化・状態fileの権限・文書を差し戻し。2026-11-27 に `5b27f01` で再々提出。再レビューで、新着がある取込での履歴の再試行が残り差し戻し。2026-11-27 に `cf6b1cb` で第4回提出。再レビューで履歴の再試行は確認済み、文書（release_commits・runtime contract・利用者影響・404時の表示）を差し戻し。2026-11-27 に `5c38323` で第5回提出。再レビューで残りは user_maintenance_impact のみとされ、通知書だけを直して第6回提出
 - production approval: 未実施（本番反映・端末配信は別承認）
