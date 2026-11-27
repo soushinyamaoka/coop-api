@@ -6,15 +6,28 @@ policy_bundle_version: 2026-09-04.1
 notice_id: 20261118-COOPAPI-008
 app: coop-api
 source_branch: main
-source_commit: 5b27f013aa8e962c545533cb74a9339b3880972b
+source_commit: cf6b1cba561d773ccaa15dafe8feceb439e05b03
 production_baseline_commit: c94f8a0c3a310727779610d74f01b8a80d228913
-release_commits: a09b441e733b58486b516f4dadbee7f6282fb73b, 5146ab10ac5de9ba26b84e5097b753763fb4f91d, 5b27f013aa8e962c545533cb74a9339b3880972b
+release_commits: a09b441e733b58486b516f4dadbee7f6282fb73b, 5146ab10ac5de9ba26b84e5097b753763fb4f91d, 5b27f013aa8e962c545533cb74a9339b3880972b, cf6b1cba561d773ccaa15dafe8feceb439e05b03
 impact_level: L2
 status: ready_for_review
 created_by: Claude
 production_change: required
 vps_management_handoff: required
 deployment_status: not_started
+
+## 第4回提出（2026-11-27）: 履歴の再試行（新着がある場合）
+
+再レビューで、`5b27f01` の履歴の再試行は「新しい注文が無かった取込」でしか行わず、次の取込に新着があると前回分を復旧できない点が残った。`cf6b1cb` で修正した（変わったのは `fetch_coop_mail.py` だけ）。
+
+| 場面 | `5b27f01` | `cf6b1cb` |
+|---|---|---|
+| 前回、注文Aの履歴保存だけ失敗（最新注文はA）。次の取込で新しい注文Bが届き、履歴は保存できる | 最新注文がBに置き換わり、Aは履歴に入らないまま失われる | 最新注文を置き換える前に、いまの最新注文Aが履歴に無いことを確かめ、AとBを一緒に履歴へ保存してから最新注文をBにする（`history_retry`） |
+| 同上で、履歴がまだ保存できない | 最新注文がBに置き換わり、Aを失う | Aが履歴に入ったと確かめられない間は、最新注文をBに進めない（`results_save_skipped`、`target=coop_latest`・`reason=history_pending`、502 `save`）。復旧後の取込で、AとBを一緒に保存して最新注文をBにする |
+| 前回分が履歴にある状態で、履歴だけ保存できない | 最新注文は新しい注文にする | 同左（変更なし）。新しい注文は、次の取込で履歴に足す |
+| 新しい注文が無い取込 | 最新注文が履歴に無ければ足す | 同左 |
+
+トレードオフ: 履歴を保存できない障害が続く間、COOPタブの最新注文が新しい週に進まないことがある（取込状況には `failure`/`save` が記録され、アプリに警告が出る）。前回分の注文を失わないことを優先した。
 
 ## 再々提出（2026-11-27）: 再レビューの指摘への対応
 
@@ -74,7 +87,7 @@ server_impact: approval_required
 | 最新注文より前の注文 | 最新注文を上書きする | 取り込まずに次の候補を見る（`email_candidate_skipped`、`reason=older_than_latest`）。最新注文は変わらない |
 | 最新注文と同じメール（cron） | 取込を終える | 次の候補を見る（`reason=same_as_latest`）。同じ週の変更前の版（メールの日時が最新注文以前）は `reason=superseded` で飛ばす |
 | `coop_orders.json`・`coop_latest.json` の書き込み | 直接上書き | 一時fileから `os.replace`（既存の mode を引き継ぐ） |
-| 履歴の保存だけ失敗した注文 | 次の取込で履歴に入らない | 新しい注文が無かった取込で履歴に足す |
+| 履歴の保存だけ失敗した注文 | 次の取込で履歴に入らない | 次の取込で履歴に足す（新着があれば一緒に保存。前回分が履歴に入るまで最新注文を進めない） |
 | Gmail IMAP の接続・応答 | タイムアウトなし | 60秒で打ち切り `connection` |
 | 過去分取込（`--backfill-days`） | 履歴のみ | 同左。取込状況は記録しない |
 
@@ -87,8 +100,8 @@ server_impact: approval_required
 - cron/timer/worker: 時刻・定義・lock file・終了コードは変更なし。cronの取込も成否を `coop_fetch_status.json` に書く（lock の中で書く）。IMAPが応答しない場合も60秒で終わる
 - dependency: 変更なし（`requirements.txt` 不変。標準ライブラリの `dataclasses` を追加で使うのみ）
 - data/DB/volume: `coop_orders.json`・`coop_latest.json`・**新しいfile `coop_fetch_status.json`**（数百バイト、取込のたびに上書き）は、同じdirectoryの一時file（`.<name>.<ランダム>.tmp`）に書いてから `os.replace` で置き換える。所有者・グループは書いたプロセス（API・cronとも `coop-api`）。mode は既存fileを引き継ぎ、新しく作るときは umask に関係なく 0640。既存fileの形式は不変（履歴の再試行で足すのは、保存済みの最新注文と同じ形式の1件）
-- log/monitoring: 既存の `email_candidate_skipped` に `reason=same_as_latest`/`older_than_latest`/`superseded`、`import_skipped` に `reason=no_newer_order`、`results_save_skipped` に `target=coop_latest`・`reason=older_than_latest`、`results_save_failed` に `target=coop_fetch_status`／`target=coop_latest`（`reason=latest_write_failed`）が加わる。新しいイベント `history_retry`（`target=coop_orders`・`order_count`。履歴に足し直したときだけ）。`external_call_failed` に段階 `operation=connect`/`login`/`session` が付くことがある。cronの `unchanged` は候補を見終えた後に1回出す（従来の `item_count` は出さない）。1回の取込で取得するメールは、従来の最大1〜5通から最大5通になり得る（同じ注文が続く通常時）
-- 配布対象: `coop_api_server.py`、`fetch_coop_mail.py`（`deploy-files.txt` の5file中、baseline からの変更は2file。`5b27f01` で変わったのは `fetch_coop_mail.py` のみ）。`coop_parser.py`・`jev_classifier.py`・`requirements.txt`・`.env`・`data/`・test・文書・通知書は配布対象外・不変
+- log/monitoring: 既存の `email_candidate_skipped` に `reason=same_as_latest`/`older_than_latest`/`superseded`、`import_skipped` に `reason=no_newer_order`、`results_save_skipped` に `target=coop_latest`・`reason=older_than_latest`、`results_save_failed` に `target=coop_fetch_status`／`target=coop_latest`（`reason=latest_write_failed`）が加わる。新しいイベント `history_retry`（`target=coop_orders`・`order_count`。履歴に足し直すときだけ）。`results_save_skipped` に `target=coop_latest`・`reason=history_pending`（warn）が加わる。`external_call_failed` に段階 `operation=connect`/`login`/`session` が付くことがある。cronの `unchanged` は候補を見終えた後に1回出す（従来の `item_count` は出さない）。1回の取込で取得するメールは、従来の最大1〜5通から最大5通になり得る（同じ注文が続く通常時）
+- 配布対象: `coop_api_server.py`、`fetch_coop_mail.py`（`deploy-files.txt` の5file中、baseline からの変更は2file。`5b27f01`・`cf6b1cb` で変わったのは `fetch_coop_mail.py` のみ）。`coop_parser.py`・`jev_classifier.py`・`requirements.txt`・`.env`・`data/`・test・文書・通知書は配布対象外・不変
 
 ## production変更
 
@@ -133,6 +146,11 @@ server_impact: approval_required
 ## Health・テスト
 
 - health contract変更: なし
+- 第4回提出時のテスト（ローカル、合成データのみ）: Windows `pytest` 147 passed・4 skipped（POSIXの mode 検証）、`python:3.10-slim`（Docker、POSIX）で 151 passed。追加・変更した回帰テスト（`5b27f01` のコードでは4件が失敗することを確認）:
+  - 注文Aの履歴保存だけ失敗した後、次の取込で新しい注文Bが届いても、AとBの両方が履歴に入り、最新注文がBになること（cron・手動とも）
+  - 履歴がまだ保存できないうちにBが届いたら、最新注文はAのまま（502 `save`、`history_pending`）で、復旧後の取込でAとBが保存されること
+  - 前回分が履歴にあれば、履歴だけ保存できなくても最新注文は新しい注文にすること
+  - 最新注文の書き込み失敗のテストで、前回の最新注文が履歴に入ることを期待値に加えた
 - 再々提出時のテスト（ローカル、合成データのみ）: Windows `pytest` 143 passed・4 skipped（POSIXの mode 検証）、`python:3.10-slim`（Docker、POSIX）で 147 passed。追加した回帰テスト（`5146ab1` のコードでは8件が失敗することを確認。mode のテストは POSIX のみ）:
   - 取込状況の記録が、成功時も想定外の例外時も lock を持ったまま行われること
   - 履歴の保存だけ失敗した注文が、次の取込（変化なし）で分類なしに履歴へ入り、以後は重複しないこと。再試行も失敗したら `save` で連続失敗に数えること。手動の `no_data` でも再試行すること
@@ -168,7 +186,7 @@ server_impact: approval_required
 
 ## 提出前セルフチェック
 
-通知006で全項目を実施済みのため、今回は変更範囲に絞って確認した。再提出では、`a09b441` から `5146ab1` までの差分（配布対象2file・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。依存・認証・bind・cron・env・lock・終了コード・`deploy-files.txt` は不変で、コミットに秘密値・実メールの内容は無い。再々提出では、`5146ab1` から `5b27f01` までの差分（`fetch_coop_mail.py`・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。新しい依存は無い（標準ライブラリの `stat` のみ）。
+通知006で全項目を実施済みのため、今回は変更範囲に絞って確認した。再提出では、`a09b441` から `5146ab1` までの差分（配布対象2file・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。依存・認証・bind・cron・env・lock・終了コード・`deploy-files.txt` は不変で、コミットに秘密値・実メールの内容は無い。第4回提出では、`5b27f01` から `cf6b1cb` までの差分（`fetch_coop_mail.py`・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。再々提出では、`5146ab1` から `5b27f01` までの差分（`fetch_coop_mail.py`・`API_SPEC.md`・`CLAUDE.md`・test）だけを確認した。新しい依存は無い（標準ライブラリの `stat` のみ）。
 
 - baseline `c94f8a0` から `source_commit` までのops以外の差分は、配布対象の `coop_api_server.py`・`fetch_coop_mail.py` と、文書・test（`API_SPEC.md`・`CLAUDE.md`・`tests/`）。`coop_parser.py`・`jev_classifier.py`・`requirements.txt`・`deploy-files.txt` は変更なし。依存・認証・bind・cron・env変数名・lock・終了コードは不変。
 - 配布物に `.env`・`data/`・一時file・実メールの内容が入らないこと、通知書とコミットに実際の金額・番号・URL・アドレス・パスワードが無いことを確認した。
@@ -192,5 +210,5 @@ VPS管理レビュー後に別途調整。
 ## Approval
 
 - app owner: 方針を承認（2026-11-18「その対応、進めましょう」「良いです」）
-- VPS management review: 初回（`a09b441`）は差し戻し（保存失敗時の応答と状態更新・古い再送メールの扱い・IMAP切断の分類）。2026-11-27 に `5146ab1` で再提出。再レビューで保存失敗の502は確認済み、排他・履歴の再試行・同日旧版・IMAPの初期化・状態fileの権限・文書を差し戻し。2026-11-27 に `5b27f01` で再々提出
+- VPS management review: 初回（`a09b441`）は差し戻し（保存失敗時の応答と状態更新・古い再送メールの扱い・IMAP切断の分類）。2026-11-27 に `5146ab1` で再提出。再レビューで保存失敗の502は確認済み、排他・履歴の再試行・同日旧版・IMAPの初期化・状態fileの権限・文書を差し戻し。2026-11-27 に `5b27f01` で再々提出。再レビューで、新着がある取込での履歴の再試行が残り差し戻し。2026-11-27 に `cf6b1cb` で第4回提出
 - production approval: 未実施（本番反映・端末配信は別承認）
