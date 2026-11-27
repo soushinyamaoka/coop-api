@@ -933,15 +933,29 @@ def save_results(results: list[dict], update_latest: bool = True) -> bool:
     """パース結果を注文履歴（coop_orders.json）へ追記し、最新注文を coop_latest.json に保存する。
 
     注文履歴・最新注文のどちらかを保存できなかった場合は False を返す（呼び出し側がジョブ失敗として扱う）。
-    注文履歴を保存できなかった場合も、最新注文（coop_latest.json）の保存は従来どおり続ける。
     どちらのファイルも一時ファイルに書いてから置き換えるので、書き込みの途中で失敗しても元の内容が残る。
     保存済みの最新注文より前の注文は、最新注文にはしない（履歴にだけ追加する）。
+
+    履歴の再試行: 最新注文を置き換えるときは、いまの最新注文（前回の取込で、最新注文だけ保存できて
+    履歴に入らなかった注文かもしれない）が履歴に無ければ、新しい注文と一緒に履歴へ足す。
+    履歴を保存できなかった場合、いまの最新注文が履歴に入ったと確かめられないときは、最新注文を
+    新しい注文で置き換えない（置き換えると前回分を失うため）。新しい注文は、履歴を保存できるように
+    なった次の取込で、前回分と一緒に保存する。いまの最新注文が履歴にある（または無い）ときは、
+    履歴を保存できなくても最新注文は従来どおり更新する。
     """
     if not results:
         log_event(logger, logging.INFO, "results_save_skipped", reason="no_results")
         return True
 
     DATA_DIR.mkdir(exist_ok=True)
+    result_keys = {_order_key(order) for order in results}
+    # いまの最新注文。最新注文を置き換えるときに、履歴に入っているかを確かめる
+    previous_latest = _load_latest_order() if update_latest else None
+    if previous_latest is not None and (
+        not previous_latest.get("order_date") or _order_key(previous_latest) in result_keys
+    ):
+        previous_latest = None  # 注文日の無い旧データ・同じ注文の取り込み直しは対象外
+    previous_in_history = previous_latest is None
 
     # 注文履歴：既存に追記（重複は除外）し、注文日の古い順に並べる
     history_saved = True
@@ -959,7 +973,14 @@ def save_results(results: list[dict], update_latest: bool = True) -> bool:
     else:
         known = {_order_key(order) for order in history if isinstance(order, dict)}
         added = 0
-        for order in results:
+        additions = list(results)
+        if previous_latest is not None:
+            if _order_key(previous_latest) in known:
+                previous_in_history = True
+            else:
+                log_event(logger, logging.INFO, "history_retry", target="coop_orders", order_count=1)
+                additions.insert(0, previous_latest)
+        for order in additions:
             key = _order_key(order)
             if key in known:
                 continue
@@ -985,6 +1006,7 @@ def save_results(results: list[dict], update_latest: bool = True) -> bool:
                 error_class=type(exc).__name__,
             )
         else:
+            previous_in_history = True
             log_event(
                 logger,
                 logging.INFO,
@@ -999,6 +1021,10 @@ def save_results(results: list[dict], update_latest: bool = True) -> bool:
 
     # 最新の注文だけ別ファイルにも保存（アプリからの取得用）
     latest = results[-1]  # 一番新しいもの
+    if not previous_in_history:
+        # 前回分が履歴に入っていないまま最新注文を置き換えると、前回分を失う
+        log_event(logger, logging.WARNING, "results_save_skipped", target="coop_latest", reason="history_pending")
+        return False
     if _is_older_than_latest(latest.get("order_date", ""), _load_latest_order()):
         log_event(logger, logging.INFO, "results_save_skipped", target="coop_latest", reason="older_than_latest")
         return history_saved

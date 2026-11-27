@@ -860,9 +860,9 @@ def test_latest_write_failure_keeps_previous_latest_and_returns_502_save(monkeyp
     assert _fetch_status(data_dir)["last_error_kind"] == "save"
     failed = [r.event_fields for r in caplog.records if getattr(r, "event", None) == "results_save_failed"]
     assert [(f["target"], f["reason"]) for f in failed] == [("coop_latest", "latest_write_failed")]
-    # 履歴は保存できている（再実行しても重複しない）
+    # 履歴は保存できている（前回の最新注文が履歴に無かったので一緒に入る。再実行しても重複しない）
     history = json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]
-    assert len(history) == 1
+    assert [o["order_date"] for o in history] == ["2026-09-20", "2026-09-27"]
 
 
 def test_history_write_failure_keeps_previous_history_file(monkeypatch, tmp_path):
@@ -1152,3 +1152,79 @@ def test_new_data_files_are_created_0640_regardless_of_umask(monkeypatch, tmp_pa
     fetch.import_coop_mail(save=True)
     assert (data_dir / "coop_fetch_status.json").stat().st_mode & 0o777 == 0o600
     assert not list(data_dir.glob(".*.tmp"))
+
+
+
+# ─── 通知008の再々レビュー対応（新着があっても前回分の履歴を復旧する） ───
+
+
+def _history_dates(data_dir):
+    return [o["order_date"] for o in json.loads((data_dir / "coop_orders.json").read_text(encoding="utf-8"))["orders"]]
+
+
+@pytest.mark.parametrize("skip_if_unchanged", [True, False])
+def test_previous_order_is_recovered_into_history_when_next_import_has_new_order(monkeypatch, tmp_path, skip_if_unchanged):
+    """注文Aの履歴保存だけ失敗した後、次の取込で新しい注文Bが届いても、AとBの両方が履歴に入る。"""
+    data_dir, _calls = setup_import(monkeypatch, tmp_path)
+    a = _order_mail(1, "しょうゆ", A_DATE)
+    b = _order_mail(2, "みそ", B_DATE)
+    history_file = data_dir / "coop_orders.json"
+    history_file.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([a]))
+    assert fetch.import_coop_mail(save=True, skip_if_unchanged=skip_if_unchanged).error_kind == "save"
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-11-11"
+
+    history_file.unlink()  # 原因が解消した
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([a, b]))
+    outcome = fetch.import_coop_mail(save=True, skip_if_unchanged=skip_if_unchanged)
+
+    assert outcome.succeeded
+    assert _history_dates(data_dir) == ["2026-11-11", "2026-11-18"]
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-11-18"
+    assert _fetch_status(data_dir)["last_result"] == "success"
+
+
+def test_latest_is_not_advanced_while_previous_order_cannot_enter_history(monkeypatch, tmp_path, caplog):
+    """履歴が保存できないまま新しい注文Bが届いたら、Aを失わないよう最新注文はAのままにし、復旧後にAとBを保存する。"""
+    data_dir, _calls = setup_import(monkeypatch, tmp_path)
+    a = _order_mail(1, "しょうゆ", A_DATE)
+    b = _order_mail(2, "みそ", B_DATE)
+    history_file = data_dir / "coop_orders.json"
+    history_file.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([a]))
+    fetch.import_coop_mail(save=True, skip_if_unchanged=True)
+    latest_a = (data_dir / "coop_latest.json").read_bytes()
+
+    monkeypatch.setattr(fetch.imaplib, "IMAP4_SSL", lambda *_args, **_kwargs: MultiFakeMail([a, b]))
+    _server, client = _server_client(monkeypatch)
+    response = client.post("/api/coop/fetch")  # まだ履歴が壊れたまま
+
+    assert response.status_code == 502 and response.json()["error_kind"] == "save"
+    assert (data_dir / "coop_latest.json").read_bytes() == latest_a
+    assert history_file.read_text(encoding="utf-8") == "{broken"
+    skipped = [r.event_fields for r in caplog.records if getattr(r, "event", None) == "results_save_skipped"]
+    assert {"target": "coop_latest", "reason": "history_pending"} in skipped
+    assert _fetch_status(data_dir)["consecutive_failures"] == 2
+
+    history_file.unlink()
+    assert fetch.import_coop_mail(save=True, skip_if_unchanged=True).succeeded
+    assert _history_dates(data_dir) == ["2026-11-11", "2026-11-18"]
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-11-18"
+
+
+def test_latest_still_advances_when_previous_order_is_already_in_history(monkeypatch, tmp_path):
+    """前回分が履歴にあるなら、履歴の保存に失敗しても最新注文は従来どおり新しい注文にする。"""
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(fetch, "DATA_DIR", data_dir)
+    fetch.save_results([_order("2026-11-11", "a")])
+    real_write = fetch._write_json_atomic
+
+    def write(path, data):
+        if path.name == "coop_orders.json":
+            raise OSError("disk full")
+        return real_write(path, data)
+
+    monkeypatch.setattr(fetch, "_write_json_atomic", write)
+    assert fetch.save_results([_order("2026-11-18", "b")]) is False
+    assert json.loads((data_dir / "coop_latest.json").read_text(encoding="utf-8"))["order_date"] == "2026-11-18"
+    assert _history_dates(data_dir) == ["2026-11-11"]
