@@ -61,6 +61,8 @@
 
 `fetch_status` は、メールの通常取込（定期取込・`POST /api/coop/fetch`）の直近の結果。`data/coop_fetch_status.json` に取込のたびに記録する。まだ記録が無い場合は `null`。過去分の取り込み（`--backfill-days`）と、別の取込が実行中で実行しなかった場合（busy）は記録しない。
 
+最新注文（`coop_latest.json`）がまだ無い場合は HTTP 404（`detail`: 注文データがありません）を返し、`fetch_status` は含まれない。このとき取込が失敗し続けていても、アプリはCOOPタブに警告を出せない（「一覧の読み込みに失敗しました: 注文データが見つかりません。」と表示する）。失敗の理由は、🔄（`POST /api/coop/fetch` の502）とログで確かめる。
+
 | 項目 | 内容 |
 |---|---|
 | `last_attempt_at` | 直近の取込の日時（日本時間） |

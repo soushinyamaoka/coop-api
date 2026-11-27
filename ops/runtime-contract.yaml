@@ -3,7 +3,7 @@ app: coop-api
 
 canonical_repo: https://github.com/soushinyamaoka/coop-api.git
 canonical_ref: main
-updated_at: 2026-10-04
+updated_at: 2026-11-27
 verified_against_runtime: null   # 本ファイル全体の実機照合日は未確定。Jevの004反映・実行確認はVPS管理の2026-09-27実施記録に基づく。分類overrideの原子的保存・専用lockと両一時directoryは005の未deploy実装を反映した宣言。
 
 runtime:
@@ -55,6 +55,9 @@ config:
     notice 20261004-COOPAPI-006（注文履歴の追記化）は、VPS管理の報告（2026-10-04）でproduction反映済み。
     API・認証境界・注文データ保持が確認されている。過去分取込（--backfill-days）は、VPS管理の報告（2026-10-05）で
     265日分を本番実行済み（履歴22件、重複なし、最新注文 coop_latest.json は変更なし）。
+    notice 20261118-COOPAPI-008（取得失敗の502・取込状況の記録・data fileの原子的置換・履歴の再試行）は
+    VPS管理レビュー中でproduction未反映。本契約の「008反映後」の記述は、反映前の宣言（稼働状態の正本はVPS管理側の記録）。
+    008でenv変数の追加・変更は無い。
 
 data:
   databases: []
@@ -65,14 +68,18 @@ data:
       note: >
         2026-10-04のnotice 20261004-COOPAPI-006のproduction反映後は、注文日＋source_fingerprintで重複除外して追記する注文履歴
         （反映前は取込ごとに orders 配列（通常1件）で上書きされ、蓄積されなかった）。2026-09-27にsource_fingerprint項目を追加（既存データの移行不要）。
-        書込方式は同一pathへの直接書込で一時fileは作らない（原子的置換ではない）。既存fileが読めない場合は上書きせず履歴保存をskipし、
-        job_endをfailureにする。注文ごとに単調増加し、失うと過去注文を再取得できない場合がある（--backfill-daysでGmailに残る範囲は再取込可能）。
+        008反映前（現行）の書込方式は同一pathへの直接書込で一時fileは作らない（原子的置換ではない）。既存fileが読めない場合は上書きせず履歴保存をskipし、
+        job_endをfailureにする。
+        008反映後: 同じdirectoryの一時file（.coop_orders.json.<ランダム>.tmp）に書いてから os.replace で置き換える。既存fileの mode を引き継ぎ
+        （新規作成時は umask に関係なく 0640）、所有者・グループは書いたプロセス（coop-api）。履歴の保存に失敗した注文は、次の通常取込で
+        （新着の有無にかかわらず）履歴に足す（history_retry）。前回分が履歴に入ったと確かめられない間は coop_latest.json を新しい注文に進めない。注文ごとに単調増加し、失うと過去注文を再取得できない場合がある（--backfill-daysでGmailに残る範囲は再取込可能）。
         過去分取込（--backfill-days 265相当）は、2026-10-05にVPS管理が本番実行済み（履歴22件、重複なし。過去分の分類はキーワード判定のみ）。rollback時は、旧コードが履歴を1件へ上書きするため、先にこのfileを退避する。
         2026-10-05のnotice 20261005-COOPAPI-007のproduction反映後（VPS管理の報告）は、order_date はメール本文の翌週商品配達予定日（読めない場合は受信日、日本時間）で、order_date_source と本体・税込の合計金額が追加されている。反映時に、旧形式（受信日で保存）の注文履歴はVPS管理側で整理され、手動取得後の最新注文で order_date_source=delivery_schedule が確認されている。既存データの移行は行わない。
     - path: /opt/apps/coop-api/data/coop_latest.json
       backup_required: true
       regenerable: false
-      note: 最新1件の派生ファイル（coop_orders.jsonから再生成可能だが、直近の在庫計算がこのfileに依存するため運用上はbackup対象）。2026-10-05のnotice 20261005-COOPAPI-007の反映後は、order_date の意味が配達予定日で、order_date_source と本体・税込の合計金額を含む（手動取得後の最新注文で確認済み。VPS管理の報告）。
+      mode: "0640"   # 008反映後は置き換えでも既存の mode を引き継ぎ、新規は0640
+      note: 最新1件の派生ファイル（coop_orders.jsonから再生成可能だが、直近の在庫計算がこのfileに依存するため運用上はbackup対象）。008反映後は一時file（.coop_latest.json.<ランダム>.tmp）から os.replace で置き換える。注文履歴に前回分が入るまで新しい注文に進めないことがある（results_save_skipped reason=history_pending）。2026-10-05のnotice 20261005-COOPAPI-007の反映後は、order_date の意味が配達予定日で、order_date_source と本体・税込の合計金額を含む（手動取得後の最新注文で確認済み。VPS管理の報告）。
     - path: /opt/apps/coop-api/data/category_overrides.json
       backup_required: true
       regenerable: false
@@ -102,6 +109,21 @@ data:
         2026-09-27新規。商品名→Jev判定結果のcacheのみ。欠損・破損時は空cacheとして継続し、
         次回Jev問い合わせ時に再生成される。Jevは004でproduction有効化済みで、
         VPS管理レビューは既存cacheを確認済み。005の専用一時directoryは未反映。
+    - path: /opt/apps/coop-api/data/coop_fetch_status.json
+      backup_required: false
+      regenerable: true
+      mode: "0640"
+      note: >
+        008反映後に新規作成。通常取込（cron・POST /api/coop/fetch）の直近の成否（last_attempt_at・last_result・last_error_kind・
+        last_success_at・consecutive_failures）。GET /api/coop/ingredients の fetch_status で返す。取込の lock の中で、一時file
+        （.coop_fetch_status.json.<ランダム>.tmp）から os.replace で書く。新規は umask に関係なく 0640、所有者・グループは coop-api。
+        秘密値・メールの内容を含まない。失っても次の取込で作り直される（連続失敗の回数は0から数え直し）。
+    - path: /opt/apps/coop-api/data/.coop_orders.json.*.tmp, .coop_latest.json.*.tmp, .coop_fetch_status.json.*.tmp
+      backup_required: false
+      regenerable: true
+      note: >
+        008反映後の原子的置換用の一時file（data/ 直下、同じfilesystem）。書き込み中の数ミリ秒だけ存在し、失敗時も削除する。
+        プロセスの異常終了で残った場合は削除してよい。backupの事前読取検査とtarで、この名前の形の一時fileを除外するかはVPS管理側で判断。
     - path: /opt/apps/coop-api/data/.coop_import.lock
       backup_required: false
       regenerable: true
@@ -117,11 +139,13 @@ jobs:
       stdout構造化ログの job_end イベント（job=coop-mail-import, status=success|failure,
       duration_ms）。2026-09-27時点で監視システムへの自動連携（alert等）は未整備、ログ上の確認のみ。
       同一注文時は import_skipped（reason=unchanged）を伴う success として記録される。
+      008反映後は、成否を data/coop_fetch_status.json にも記録する（取得・保存の失敗は failure と error_kind
+      auth|connection|message|configuration|save|internal）。Gmail IMAP の接続・応答は60秒で打ち切る。
     concurrency_control: file_lock
     concurrency_note: >
       cron（07:00/20:00 JST固定）と手動 `POST /api/coop/fetch` の双方が
       data/.coop_import.lockを使い、IMAP取得、同一注文判定、分類（Jev cacheのread-modify-writeを含む）、
-      注文JSON保存をプロセス間・スレッド間で直列化する。ロック取得に失敗したcronは
+      注文JSON保存（008反映後は履歴の再試行と取込状況 coop_fetch_status.json の読み書きを含む）をプロセス間・スレッド間で直列化する。ロック取得に失敗したcronは
       import_skipped（reason=locked）を記録してsuccessで終了し、/fetchは待機せずHTTP 200の
       status=busyを返す。プロセス異常終了時はOSがロックを解放するため、残ったロックファイルは
       次回取得を妨げない。
