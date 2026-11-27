@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import errno
+import hmac
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from datetime import datetime
@@ -50,6 +51,8 @@ load_dotenv()
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8003"))
 API_TOKEN = os.getenv("API_TOKEN", "")
+# 参照専用トークン（注文の参照 GET /api/coop/ingredients・/api/coop/orders だけ。meal-api 用）。未設定なら使えない
+API_READ_TOKEN = os.getenv("API_READ_TOKEN", "")
 
 # 既存APIサーバーのURL
 RECIPE_GENERATE_URL = os.getenv("RECIPE_GENERATE_URL", "http://localhost:8001/api/recipes/generate")
@@ -160,12 +163,31 @@ app.add_middleware(
 # 認証（シンプルなトークン方式）
 # ============================================================
 
+def _bearer_matches(authorization: str, token: str) -> bool:
+    """Authorization ヘッダーが「Bearer <token>」と一致するか（時間差で推測されない比べ方）。token が空なら一致しない"""
+    if not token:
+        return False
+    return hmac.compare_digest(authorization.encode("utf-8"), f"Bearer {token}".encode("utf-8"))
+
+
 def verify_token(authorization: str = Header(default="")):
-    """APIトークンの検証（設定されている場合のみ）"""
+    """APIトークンの検証（全権。設定されている場合のみ）。参照専用トークン（API_READ_TOKEN）では 403"""
     if not API_TOKEN:
-        return  # トークン未設定なら認証スキップ
-    if authorization != f"Bearer {API_TOKEN}":
-        raise HTTPException(status_code=401, detail="認証エラー: 無効なトークンです")
+        return  # トークン未設定なら認証スキップ（従来どおり）
+    if _bearer_matches(authorization, API_TOKEN):
+        return
+    if _bearer_matches(authorization, API_READ_TOKEN):
+        raise HTTPException(status_code=403, detail="参照専用のトークンでは使えない操作です")
+    raise HTTPException(status_code=401, detail="認証エラー: 無効なトークンです")
+
+
+def verify_read_token(authorization: str = Header(default="")):
+    """注文の参照（GET /api/coop/ingredients・/api/coop/orders）だけ。全権のトークンか参照専用トークン"""
+    if not API_TOKEN:
+        return  # トークン未設定なら認証スキップ（従来どおり）
+    if _bearer_matches(authorization, API_TOKEN) or _bearer_matches(authorization, API_READ_TOKEN):
+        return
+    raise HTTPException(status_code=401, detail="認証エラー: 無効なトークンです")
 
 
 # ============================================================
@@ -336,7 +358,7 @@ def get_ingredients(authorization: str = Header(default="")):
     最新の注文から食材リストを返す
     カテゴリ別に分類済み、学習データによる上書き適用済み
     """
-    verify_token(authorization)
+    verify_read_token(authorization)
 
     order = load_latest_order()
     if not order:
@@ -394,7 +416,7 @@ def get_orders(
     authorization: str = Header(default=""),
 ):
     """注文履歴を新しい順に返す。include_items=true なら注文ごとの商品一覧も含める"""
-    verify_token(authorization)
+    verify_read_token(authorization)
 
     data = load_all_orders()
     if not data:

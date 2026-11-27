@@ -100,6 +100,7 @@ coop-api/
 ### 認証
 - Bearer Token方式: `Authorization: Bearer <API_TOKEN>`
 - 全エンドポイントで必要（`/` を除く）
+- 参照専用トークン `API_READ_TOKEN`（meal-api 用）は `GET /api/coop/ingredients`・`/api/coop/orders` だけで使え、ほかは403（`verify_read_token`）。新しいAPIを足すときは `verify_token`（全権）を使い、参照専用で使わせるかを決める
 
 ### 外部接続
 - Gmail IMAP: `imap.gmail.com:993` (SSL)
@@ -186,6 +187,7 @@ COOP_SENDER=coopdeli
 API_HOST=127.0.0.1
 API_PORT=8003
 API_TOKEN=<任意のトークン>
+API_READ_TOKEN=<参照専用トークン（API_TOKENとは別の値。meal-api に渡す）>
 ```
 
 ### カテゴリ分類ロジック

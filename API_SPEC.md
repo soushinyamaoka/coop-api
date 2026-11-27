@@ -1,7 +1,16 @@
 # COOP連携API 仕様書
 
 **ベースURL**: `http://<VPS_IP>:8003`
-**認証**: 全エンドポイント（`/` を除く）に `Authorization: Bearer <API_TOKEN>` が必要
+**認証**: 全エンドポイント（`/` を除く）に `Authorization: Bearer <トークン>` が必要
+
+| トークン | 使えるAPI |
+|---|---|
+| `API_TOKEN`（全権。アプリ用） | すべて |
+| `API_READ_TOKEN`（参照専用。meal-api 用） | `GET /api/coop/ingredients`・`GET /api/coop/orders` だけ。ほかは **403**「参照専用のトークンでは使えない操作です」 |
+
+- 合わないトークン・無いときは 401。`API_READ_TOKEN` が未設定なら参照専用トークンは使えない（空のトークンは一致しない）
+- トークンは時間差で推測されない比べ方（`hmac.compare_digest`）で照合する
+- `API_TOKEN` が未設定のときは認証を行わない（従来どおり。本番では設定する）
 
 ---
 

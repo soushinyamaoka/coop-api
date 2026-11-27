@@ -43,6 +43,7 @@ config:
     - { name: API_HOST, required: false, secret: false }
     - { name: API_PORT, required: false, secret: false }
     - { name: API_TOKEN, required: true, secret: true }
+    - { name: API_READ_TOKEN, required: false, secret: true }   # 通知009（反映前の宣言）。注文の参照2つだけの参照専用トークン（meal-api 用）。未設定なら参照専用トークンは使えない
     - { name: CATEGORY_CLASSIFIER, required: false, secret: false }   # 2026-09-27追加。keyword|jev。未設定はkeyword
     - { name: TYPESAFE_API_KEY, required: false, secret: true }        # 2026-09-27追加。CATEGORY_CLASSIFIER=jev時のみ実質必須。値未設定ならjev指定でもkeywordへfallback
   secret_provisioning: manual
